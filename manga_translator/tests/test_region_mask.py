@@ -1,7 +1,6 @@
 """Tests for region exclusion mask functionality."""
 
 import numpy as np
-import pytest
 from types import SimpleNamespace
 
 from manga_translator.region_mask import (

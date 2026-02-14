@@ -10,8 +10,7 @@ import os
 
 import cv2
 import numpy as np
-import pytest
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch
 
 from manga_translator.manga_translator import (
     MangaTranslationPipeline,
@@ -22,7 +21,6 @@ from manga_translator.manga_translator import (
 from manga_translator.batch_processor import BatchProcessor, BatchResult
 from manga_translator.components.ocr_engine import OCRResult
 from manga_translator.components.translator import TranslationResult
-from manga_translator.config.settings import PluginSettings
 from manga_translator.perf_monitor import PerfMonitor
 from manga_translator.quality_control import QualityChecker
 from manga_translator.translation_memory import TranslationMemory
@@ -155,7 +153,6 @@ class TestPipelineEndToEnd:
         pipeline1 = MangaTranslationPipeline(translation_memory=tm)
         result1 = pipeline1.translate_page(image, source_lang="ja", target_lang="en")
         assert len(result1.bubbles) >= 1
-        first_call_count = mock_trans.call_count
 
         # Second run — TM should have cached entries, so translator gets
         # fewer (or zero) texts to translate
@@ -167,8 +164,7 @@ class TestPipelineEndToEnd:
         # because TM hits bypass it
         if mock_trans.call_count > 0:
             # If called, it should have received fewer texts
-            second_texts = mock_trans.call_args[0][0] if mock_trans.call_args else []
-            first_texts = []
+            mock_trans.call_args[0][0] if mock_trans.call_args else []
             # At minimum, second run should still produce valid results
             assert len(result2.bubbles) >= 1
         else:
@@ -231,7 +227,7 @@ class TestPipelineEndToEnd:
         def progress_cb(step, total, message):
             calls.append((step, total, message))
 
-        result = pipeline.translate_page(
+        pipeline.translate_page(
             image, source_lang="ja", target_lang="en",
             progress_callback=progress_cb,
         )
@@ -293,7 +289,7 @@ class TestTranslateFile:
         image = _make_synthetic_page()
         cv2.imwrite(input_path, image)
 
-        result = translate_file(input_path, source_lang="ja", target_lang="en")
+        translate_file(input_path, source_lang="ja", target_lang="en")
 
         expected_output = str(tmp_path / "manga_page_translated.png")
         assert os.path.isfile(expected_output)

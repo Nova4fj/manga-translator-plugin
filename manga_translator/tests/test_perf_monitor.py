@@ -1,7 +1,6 @@
 """Tests for performance monitor."""
 
 import time
-import pytest
 
 from manga_translator.perf_monitor import (
     TimingRecord,

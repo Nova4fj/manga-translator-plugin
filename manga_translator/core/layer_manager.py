@@ -6,7 +6,7 @@ and in standalone mode (using numpy arrays as layer substitutes).
 
 import logging
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import numpy as np
 
@@ -125,7 +125,7 @@ class GimpLayerAdapter:
         if not self._gimp_available or self._gimp_image is None:
             return None
 
-        from gimpfu import pdb, NORMAL_MODE
+        from gimpfu import NORMAL_MODE
         import gimp
 
         h, w = image_data.shape[:2]

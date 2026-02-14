@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from manga_translator.components.typesetter import (
-    Typesetter, TypesetResult, TextLayout, _is_cjk_char,
+    Typesetter, TypesetResult, _is_cjk_char,
 )
 
 

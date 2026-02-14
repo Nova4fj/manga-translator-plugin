@@ -7,7 +7,7 @@ pages so that batch translations maintain coherent terminology and tone.
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 

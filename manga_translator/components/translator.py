@@ -330,8 +330,8 @@ class ArgosEngine(BaseTranslationEngine):
             import argostranslate.translate
 
             languages = argostranslate.translate.get_installed_languages()
-            src_langs = [l for l in languages if l.code == source_lang]
-            tgt_langs = [l for l in languages if l.code == target_lang]
+            src_langs = [lang for lang in languages if lang.code == source_lang]
+            tgt_langs = [lang for lang in languages if lang.code == target_lang]
 
             if src_langs and tgt_langs:
                 translation = src_langs[0].get_translation(tgt_langs[0])

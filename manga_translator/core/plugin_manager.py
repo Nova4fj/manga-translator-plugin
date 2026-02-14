@@ -155,7 +155,6 @@ def _gimp_translate_page(image, drawable, mode=0, source_lang="ja",
     try:
         from manga_translator.manga_translator import MangaTranslationPipeline
         from manga_translator.config.settings import SettingsManager
-        from manga_translator.core.image_processor import pil_to_numpy, numpy_to_pil
         from manga_translator.core.layer_manager import GimpLayerAdapter
 
         # Load settings and apply preset

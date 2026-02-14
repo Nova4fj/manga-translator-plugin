@@ -177,7 +177,7 @@ class TestOCREngine:
         assert isinstance(result, OCRResult)
 
     def test_engine_availability(self):
-        engine = OCREngine()
+        OCREngine()
         tesseract = TesseractEngine()
         assert isinstance(tesseract.is_available(), bool)
 

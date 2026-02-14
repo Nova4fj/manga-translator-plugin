@@ -2,6 +2,16 @@
 
 All notable changes to Manga Translator Plugin.
 
+## [Unreleased]
+
+### Added
+- GitHub Actions CI workflow with test matrix (Python 3.10, 3.11, 3.12), lint, and coverage jobs
+- Makefile with `test`, `lint`, `coverage`, `ci`, and `clean` targets for local development
+- Coverage threshold enforcement at 80% via `pyproject.toml`
+
+### Fixed
+- Resolved 94 ruff lint warnings (unused imports, ambiguous variable names, unused assignments)
+
 ## [0.5.0] - 2026-02-14
 
 ### Added

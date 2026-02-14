@@ -4,7 +4,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import nullcontext
 from dataclasses import dataclass, field
-from typing import List, Optional, Callable, Tuple
+from typing import List, Optional, Callable
 
 import numpy as np
 
@@ -584,7 +584,7 @@ def translate_file(
         PageTranslationResult
     """
     from manga_translator.core.image_processor import load_image, save_image
-    from manga_translator.input_validator import InputValidator, ValidationError
+    from manga_translator.input_validator import InputValidator
     import os
 
     InputValidator.validate_image_path(input_path)

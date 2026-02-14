@@ -6,7 +6,6 @@ import zipfile
 import cv2
 import numpy as np
 import pytest
-from PIL import Image
 
 from manga_translator.export_manager import ExportManager, ExportOptions
 

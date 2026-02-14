@@ -1,9 +1,7 @@
 """Tests for the UnifiedConfig module."""
 
 import json
-import os
 import pytest
-from pathlib import Path
 
 from manga_translator.config.unified_config import UnifiedConfig
 from manga_translator.config.settings import PluginSettings

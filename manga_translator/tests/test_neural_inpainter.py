@@ -2,7 +2,7 @@
 
 import numpy as np
 import pytest
-from unittest.mock import patch, MagicMock, PropertyMock
+from unittest.mock import patch, MagicMock
 
 from manga_translator.components.neural_inpainter import NeuralInpainter
 
@@ -199,7 +199,7 @@ class TestInpainterLamaIntegration:
         mask[30:70, 30:70] = 255
 
         mock_lama.return_value = img.copy()
-        result = inpainter.remove_text(img, mask)
+        inpainter.remove_text(img, mask)
         mock_lama.assert_called_once()
 
     @patch("manga_translator.components.inpainter.Inpainter.is_neural_available", return_value=True)

@@ -449,10 +449,9 @@ class Inpainter:
         # Work in grayscale for analysis
         if inpainted.ndim == 3:
             inp_gray = cv2.cvtColor(inpainted, cv2.COLOR_BGR2GRAY)
-            orig_gray = cv2.cvtColor(original, cv2.COLOR_BGR2GRAY)
+            cv2.cvtColor(original, cv2.COLOR_BGR2GRAY)
         else:
             inp_gray = inpainted
-            orig_gray = original
 
         # --- Colour consistency score ---
         # Compare mean intensity inside the inpainted region with the

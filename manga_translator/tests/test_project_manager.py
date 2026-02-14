@@ -1,7 +1,5 @@
 """Tests for project management system."""
 
-import json
-import os
 import pytest
 
 from manga_translator.project_manager import (
@@ -98,7 +96,7 @@ class TestCreateAndLoad:
             pm.load_project("nonexistent")
 
     def test_roundtrip(self, pm):
-        p = pm.create_project("rt", name="Roundtrip", chapter="5")
+        pm.create_project("rt", name="Roundtrip", chapter="5")
         loaded = pm.load_project("rt")
         assert loaded.metadata.name == "Roundtrip"
         assert loaded.metadata.chapter == "5"

@@ -2,7 +2,6 @@
 
 import numpy as np
 import cv2
-import pytest
 
 from manga_translator.components.bubble_detector import BubbleDetector, BubbleRegion
 

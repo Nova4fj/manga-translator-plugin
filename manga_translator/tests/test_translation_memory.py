@@ -6,9 +6,6 @@ import pytest
 
 from manga_translator.translation_memory import (
     TranslationMemory,
-    TMEntry,
-    TMMatch,
-    TermEntry,
 )
 
 
@@ -22,7 +19,7 @@ def tm(tmp_path):
 class TestTranslationMemoryInit:
     def test_creates_db(self, tmp_path):
         db_path = str(tmp_path / "test.db")
-        tm = TranslationMemory(db_path=db_path)
+        TranslationMemory(db_path=db_path)
         assert os.path.exists(db_path)
 
     def test_default_threshold(self, tm):

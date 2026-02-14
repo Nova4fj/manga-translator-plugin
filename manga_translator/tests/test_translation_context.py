@@ -1,6 +1,5 @@
 """Tests for the context-aware translation module."""
 
-import pytest
 
 from manga_translator.translation_context import (
     ContextBuilder,

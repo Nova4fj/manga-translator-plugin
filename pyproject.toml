@@ -67,3 +67,7 @@ omit = [
     "manga_translator/__main__.py",
     "manga_translator/tests/*",
 ]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true

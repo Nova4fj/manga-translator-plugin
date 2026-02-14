@@ -1,7 +1,6 @@
 """Tests for SFX / onomatopoeia detector."""
 
 import numpy as np
-import pytest
 import cv2
 
 from manga_translator.components.sfx_detector import SFXDetector, SFXRegion, SFXType

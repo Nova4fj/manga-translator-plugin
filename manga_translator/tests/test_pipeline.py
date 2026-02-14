@@ -1,8 +1,7 @@
 """Integration tests for the full translation pipeline."""
 
 import numpy as np
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
 from manga_translator.manga_translator import (
     MangaTranslationPipeline,

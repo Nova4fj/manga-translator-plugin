@@ -1,8 +1,6 @@
 """Tests for bubble shape classifier."""
 
 import numpy as np
-import pytest
-import cv2
 
 from manga_translator.components.bubble_classifier import (
     BubbleClassifier,

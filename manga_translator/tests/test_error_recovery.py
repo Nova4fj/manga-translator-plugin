@@ -1,13 +1,11 @@
 """Tests for error recovery system."""
 
 import numpy as np
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from manga_translator.error_recovery import (
     ErrorRecoveryManager,
     RecoveryReport,
-    RecoveryAction,
 )
 from manga_translator.components.bubble_detector import BubbleDetector
 from manga_translator.components.ocr_engine import OCREngine, OCRResult

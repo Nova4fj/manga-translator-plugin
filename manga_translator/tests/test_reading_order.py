@@ -2,7 +2,7 @@
 
 import pytest
 
-from manga_translator.components.reading_order import ReadingOrderOptimizer, Panel
+from manga_translator.components.reading_order import ReadingOrderOptimizer
 
 
 class _FakeBubble:

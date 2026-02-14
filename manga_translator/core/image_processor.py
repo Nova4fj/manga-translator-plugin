@@ -1,7 +1,7 @@
 """Image processing utilities for the manga translator plugin."""
 
 import logging
-from typing import Tuple, Optional
+from typing import Tuple
 
 import cv2
 import numpy as np

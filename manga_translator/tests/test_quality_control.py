@@ -1,6 +1,5 @@
 """Tests for quality control system."""
 
-import pytest
 
 from manga_translator.quality_control import (
     QCIssue,

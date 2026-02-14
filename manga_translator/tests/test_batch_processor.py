@@ -1,8 +1,6 @@
 """Tests for batch processing engine."""
 
-import os
 import numpy as np
-import pytest
 from unittest.mock import patch, MagicMock
 
 from manga_translator.batch_processor import (

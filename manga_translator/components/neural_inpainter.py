@@ -5,9 +5,7 @@ inpainting results. Supports both PyTorch and ONNX Runtime backends,
 with automatic GPU/CPU selection and model downloading.
 """
 
-import hashlib
 import logging
-import os
 import urllib.request
 from pathlib import Path
 from typing import Optional, Tuple

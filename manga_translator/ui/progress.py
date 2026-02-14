@@ -2,8 +2,8 @@
 
 import logging
 import time
-from dataclasses import dataclass, field
-from typing import Callable, Optional, List
+from dataclasses import dataclass
+from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 

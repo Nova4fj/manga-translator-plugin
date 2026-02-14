@@ -1,8 +1,7 @@
 """Tests for inpainting component."""
 
 import numpy as np
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from manga_translator.components.inpainter import Inpainter, InpaintResult
 

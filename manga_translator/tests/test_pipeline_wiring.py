@@ -1,8 +1,7 @@
 """Tests for Phase 11 pipeline wiring — classifier, reading order, font matcher, SFX."""
 
 import numpy as np
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from manga_translator.components.bubble_detector import BubbleRegion
 from manga_translator.components.bubble_classifier import BubbleType
@@ -131,8 +130,6 @@ class TestPageTranslationResultSFX:
 class TestCLIFlags:
     def test_reading_direction_flag(self):
         """Verify --reading-direction is accepted by the parser."""
-        import argparse
-        from manga_translator.__main__ import main
         # Just verify the parser doesn't crash with the new flags
         # We can't actually run translate_file in tests
 

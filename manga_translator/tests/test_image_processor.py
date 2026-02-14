@@ -2,7 +2,6 @@
 
 import numpy as np
 import pytest
-import tempfile
 import os
 
 from manga_translator.core.image_processor import (

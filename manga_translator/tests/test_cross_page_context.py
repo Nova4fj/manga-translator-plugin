@@ -1,8 +1,7 @@
 """Tests for CrossPageContext — cross-page translation consistency."""
 
-import pytest
 
-from manga_translator.cross_page_context import CrossPageContext, PageDialogue
+from manga_translator.cross_page_context import CrossPageContext
 
 
 class TestCrossPageContextDefaults:
@@ -58,7 +57,7 @@ class TestDialogueHistory:
         ctx.update_from_page(1, texts_src[10:], texts_tgt[10:])
         summary = ctx.get_dialogue_summary(max_lines=5)
         # Only last 5 lines
-        lines = [l for l in summary.split("\n") if "->" in l]
+        lines = [line for line in summary.split("\n") if "->" in line]
         assert len(lines) == 5
 
 

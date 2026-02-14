@@ -6,7 +6,7 @@ so the pipeline continues even when individual components fail.
 
 import logging
 from dataclasses import dataclass, field
-from typing import List, Optional, Callable, Any
+from typing import List, Optional
 
 import numpy as np
 
@@ -170,7 +170,7 @@ class ErrorRecoveryManager:
             target_language=target_lang,
             engine_used="passthrough_recovery",
             confidence=0.1,
-            error=f"All engines failed, using original text",
+            error="All engines failed, using original text",
         )
 
     def try_translate_batch(

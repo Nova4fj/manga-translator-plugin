@@ -1,7 +1,6 @@
 """Tests for settings management."""
 
 import json
-import tempfile
 import pytest
 
 from manga_translator.config.settings import (

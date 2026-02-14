@@ -1,7 +1,5 @@
 """Tests for input validation module."""
 
-import os
-import tempfile
 from unittest import mock
 
 import numpy as np

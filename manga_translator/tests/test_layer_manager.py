@@ -1,7 +1,6 @@
 """Tests for layer manager."""
 
 import numpy as np
-import pytest
 
 from manga_translator.core.layer_manager import Layer, LayerStack, GimpLayerAdapter
 

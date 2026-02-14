@@ -1,6 +1,6 @@
 """Tests for per-bubble error isolation in the translation pipeline."""
 
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock
 import numpy as np
 import pytest
 

@@ -1,8 +1,6 @@
 """Tests for font matcher."""
 
-import pytest
 import tempfile
-import os
 from pathlib import Path
 
 from manga_translator.components.font_matcher import FontMatcher, FontProfile

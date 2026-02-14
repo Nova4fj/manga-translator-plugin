@@ -9,11 +9,9 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 from dataclasses import dataclass, field
-from pathlib import Path
 from threading import Lock
 from typing import List, Optional, Callable, Dict
 
-import numpy as np
 
 from manga_translator.config.settings import PluginSettings, SettingsManager
 from manga_translator.core.image_processor import load_image, save_image

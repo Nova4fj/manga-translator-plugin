@@ -1,7 +1,7 @@
 """UI dialog stubs for GIMP GTK integration and standalone CLI."""
 
 import logging
-from typing import Optional, Callable
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 

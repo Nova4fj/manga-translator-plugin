@@ -8,8 +8,7 @@ cross-platform font discovery.
 
 import logging
 import platform
-import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Tuple, Optional
 from pathlib import Path
 
