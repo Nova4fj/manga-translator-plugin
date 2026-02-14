@@ -13,3 +13,11 @@ venv/
 *.pth
 .pytest_cache/
 .ruff_cache/
+.coverage
+htmlcov/
+
+# Test artifacts
+test_*.png
+debug_*.png
+bubble_*.png
+NotoSansCJKjp-Regular.otf

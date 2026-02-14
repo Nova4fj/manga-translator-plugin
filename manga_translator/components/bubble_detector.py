@@ -123,12 +123,14 @@ class BubbleDetector:
     # ------------------------------------------------------------------
 
     def preprocess_image(self, image: np.ndarray) -> np.ndarray:
-        """Convert to grayscale, blur, and apply adaptive thresholding.
+        """Convert to grayscale, blur, and produce a binary image highlighting
+        speech bubble interiors.
 
-        The pipeline is tuned for white / light-coloured bubbles sitting on
-        varied manga artwork backgrounds.  Adaptive thresholding handles the
-        local contrast differences between panels far better than a single
-        global threshold.
+        Uses a multi-strategy approach:
+        1. Try adaptive thresholding (works well for varied manga backgrounds).
+        2. If adaptive threshold produces too many white pixels (>80%), fall
+           back to a high-brightness threshold targeting white bubble interiors
+           on lighter backgrounds.
 
         Returns:
             Binary image (uint8, values 0 or 255) where bubble interiors are
@@ -144,10 +146,10 @@ class BubbleDetector:
         # keeping bubble edges intact.
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
 
-        # Adaptive threshold — THRESH_BINARY gives us white foreground on
-        # black background.  A fairly large block size (51) ensures we adapt
-        # over panel-sized regions.
-        binary = cv2.adaptiveThreshold(
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+
+        # Strategy 1: Adaptive thresholding (good for diverse backgrounds)
+        adaptive = cv2.adaptiveThreshold(
             blurred,
             255,
             cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
@@ -155,9 +157,21 @@ class BubbleDetector:
             blockSize=51,
             C=10,
         )
+        adaptive_ratio = np.mean(adaptive > 0)
+
+        if adaptive_ratio <= 0.80:
+            # Adaptive threshold produced a useful result — use it
+            binary = adaptive
+        else:
+            # Image is too uniformly light for adaptive thresholding.
+            # Use a high brightness threshold to isolate the very brightest
+            # regions (the white bubble interiors).
+            threshold_value = max(int(np.percentile(blurred, 85)), 200)
+            _, binary = cv2.threshold(
+                blurred, threshold_value, 255, cv2.THRESH_BINARY
+            )
 
         # Morphological close to bridge small gaps in bubble outlines
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
 
         # Edge detection with Canny to find strong bubble boundaries
@@ -166,7 +180,7 @@ class BubbleDetector:
         # Dilate edges slightly so that nearby contour segments merge
         edge_dilated = cv2.dilate(edges, kernel, iterations=1)
 
-        # Combine the two sources: the adaptive-threshold binary *minus* the
+        # Combine the two sources: the threshold binary *minus* the
         # detected edges.  This tends to keep the bright bubble interiors
         # while cutting along the dark outlines.
         combined = cv2.subtract(closed, edge_dilated)
