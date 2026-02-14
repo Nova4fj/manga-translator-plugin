@@ -86,11 +86,18 @@ class MangaTranslationPipeline:
             deepl_api_key=settings.translation.deepl_api_key,
             context_prompt=settings.translation.context_prompt,
         )
+        # Determine inpainting method — prefer LaMa when neural is enabled
+        inpaint_method = settings.inpainting.method
+        lama_device = "auto" if settings.gpu_enabled else "cpu"
+        model_dir = settings.model_cache_dir or None
+
         self.inpainter = Inpainter(
-            method=settings.inpainting.method,
+            method=inpaint_method,
             inpaint_radius=settings.inpainting.inpaint_radius,
             blur_kernel_size=settings.inpainting.blur_kernel_size,
             mask_dilation=settings.inpainting.mask_dilation,
+            lama_model_dir=model_dir,
+            lama_device=lama_device,
         )
         self.typesetter = Typesetter(
             default_font=settings.typesetting.default_font,
@@ -102,7 +109,10 @@ class MangaTranslationPipeline:
             outline_width=settings.typesetting.outline_width,
             line_spacing=settings.typesetting.line_spacing,
             padding_ratio=settings.typesetting.padding_ratio,
+            alignment=settings.typesetting.alignment,
+            font_category=settings.typesetting.font_category,
         )
+        self._quality_threshold = settings.inpainting.quality_threshold
 
     def translate_page(
         self,
@@ -239,7 +249,10 @@ class MangaTranslationPipeline:
                     local_mask = np.ones((h, w), dtype=np.uint8) * 255
 
                 text_mask = self.inpainter.create_text_mask(region, local_mask)
-                result = self.inpainter.remove_text(region, text_mask)
+                result = self.inpainter.remove_text_with_fallback(
+                    region, text_mask,
+                    quality_threshold=self._quality_threshold,
+                )
                 cleaned[y : y + h, x : x + w] = result.image
                 inpaint_results.append(result)
         except Exception as e:
@@ -264,6 +277,8 @@ class MangaTranslationPipeline:
                     translation.translated_text,
                     bubble.bbox,
                     bubble_mask=bubble.mask,
+                    orientation=self.settings.typesetting.orientation,
+                    source_lang=src,
                 )
                 final = result.image
                 typeset_results.append(result)

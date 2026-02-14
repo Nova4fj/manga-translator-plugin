@@ -43,10 +43,12 @@ class DetectionSettings:
 @dataclass
 class InpaintingSettings:
     """Inpainting configuration."""
-    method: str = "opencv_telea"  # opencv_telea, opencv_ns, blur
+    method: str = "auto"  # opencv_telea, opencv_ns, blur, lama, auto
     inpaint_radius: int = 5
     blur_kernel_size: int = 15
     mask_dilation: int = 5
+    use_neural: bool = True  # prefer LaMa when available
+    quality_threshold: float = 0.5  # fallback threshold for quality-based switching
 
 
 @dataclass
@@ -61,6 +63,9 @@ class TypesettingSettings:
     outline_width: int = 0
     line_spacing: float = 1.2
     padding_ratio: float = 0.1  # padding inside bubble
+    alignment: str = "center"  # center, left, right
+    font_category: str = "dialogue"  # dialogue, narration, sfx, emphasis
+    orientation: str = "auto"  # auto, horizontal, vertical
 
 
 @dataclass
@@ -308,10 +313,10 @@ class SettingsManager:
             )
 
         # -- Inpainting -----------------------------------------------------
-        if s.inpainting.method not in ("opencv_telea", "opencv_ns", "blur"):
+        if s.inpainting.method not in ("opencv_telea", "opencv_ns", "blur", "lama", "auto"):
             errors.append(
                 f"Unknown inpainting method: {s.inpainting.method!r}. "
-                "Allowed values: opencv_telea, opencv_ns, blur."
+                "Allowed values: opencv_telea, opencv_ns, blur, lama, auto."
             )
 
         # -- Typesetting ----------------------------------------------------
@@ -363,6 +368,87 @@ class SettingsManager:
                 )
 
         return errors
+
+    # ------------------------------------------------------------------
+    # Quality presets
+    # ------------------------------------------------------------------
+
+    PRESETS: Dict[str, Dict[str, Any]] = {
+        "fast": {
+            "inpainting": {"method": "blur", "use_neural": False},
+            "ocr": {"primary_engine": "tesseract"},
+            "typesetting": {"font_size_ratio": 0.6},
+        },
+        "balanced": {
+            "inpainting": {"method": "auto", "use_neural": True},
+            "ocr": {"primary_engine": "tesseract"},
+            "typesetting": {"font_size_ratio": 0.7},
+        },
+        "quality": {
+            "inpainting": {"method": "lama", "use_neural": True},
+            "ocr": {"primary_engine": "manga-ocr"},
+            "typesetting": {"font_size_ratio": 0.7},
+        },
+    }
+
+    def apply_preset(self, preset_name: str) -> PluginSettings:
+        """Apply a named quality preset.
+
+        Available presets: ``"fast"``, ``"balanced"``, ``"quality"``.
+        Returns the updated settings.
+
+        Raises:
+            ValueError: If the preset name is unknown.
+        """
+        if preset_name not in self.PRESETS:
+            raise ValueError(
+                f"Unknown preset '{preset_name}'. "
+                f"Available: {', '.join(self.PRESETS.keys())}"
+            )
+        self._apply_raw_dict(self.PRESETS[preset_name])
+        return self._settings
+
+    # ------------------------------------------------------------------
+    # Import / Export profiles
+    # ------------------------------------------------------------------
+
+    def export_profile(self, path: str) -> Path:
+        """Export current settings to a JSON file.
+
+        Args:
+            path: Destination file path.
+
+        Returns:
+            Path to the written file.
+        """
+        dest = Path(path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        data = _serialize_settings(self._settings)
+        with open(dest, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, ensure_ascii=False)
+        return dest
+
+    def import_profile(self, path: str) -> PluginSettings:
+        """Import settings from a JSON file.
+
+        Merges the imported settings into the current settings (partial
+        updates are supported — unspecified fields keep their current values).
+
+        Args:
+            path: Source file path.
+
+        Returns:
+            The updated settings.
+
+        Raises:
+            FileNotFoundError: If the file doesn't exist.
+            json.JSONDecodeError: If the file is not valid JSON.
+        """
+        source = Path(path)
+        with open(source, "r", encoding="utf-8") as fh:
+            raw = json.load(fh)
+        self._apply_raw_dict(raw)
+        return self._settings
 
     # ------------------------------------------------------------------
     # Internal helpers
