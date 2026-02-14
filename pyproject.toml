@@ -1,10 +1,10 @@
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "manga-translator-plugin"
-version = "0.2.0"
+version = "0.3.0"
 description = "Automated manga/comic translation: bubble detection, OCR, translation, inpainting, and typesetting. Works as a GIMP plugin or standalone CLI."
 readme = "README.md"
 license = {text = "GPL-3.0-or-later"}
@@ -40,6 +40,11 @@ all = [
     "argostranslate>=1.8.0",
 ]
 dev = ["pytest>=7.0", "pytest-cov>=4.0", "ruff>=0.1.0"]
+
+[project.urls]
+Homepage = "https://github.com/manga-translator/manga-translator-plugin"
+Repository = "https://github.com/manga-translator/manga-translator-plugin"
+"Bug Tracker" = "https://github.com/manga-translator/manga-translator-plugin/issues"
 
 [project.scripts]
 manga-translator = "manga_translator.__main__:main"

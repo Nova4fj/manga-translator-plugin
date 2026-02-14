@@ -82,7 +82,7 @@ def main():
         default=None,
         help="Translation quality preset",
     )
-    parser.add_argument("--version", action="version", version="manga-translator 0.2.0")
+    parser.add_argument("--version", action="version", version="manga-translator 0.3.0")
 
     # Subcommands
     subparsers.add_parser("check", help="Check dependency status")
