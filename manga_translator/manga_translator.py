@@ -6,6 +6,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import List, Optional, Callable
 
+import cv2
 import numpy as np
 
 from manga_translator.perf_monitor import PerfMonitor
@@ -424,21 +425,54 @@ class MangaTranslationPipeline:
                             inpaint_results.append(None)
                             continue
 
-                        # Create text mask for this bubble
-                        bubble_mask = bubble.mask
-                        if bubble_mask is not None:
-                            # Crop mask to bbox
-                            local_mask = bubble_mask[y : y + h, x : x + w]
-                        else:
-                            local_mask = np.ones((h, w), dtype=np.uint8) * 255
+                        # Pad the bbox to capture text that overflows
+                        # beyond the bubble boundary (common in manga).
+                        pad = max(min(w, h) // 3, 15)
+                        px1 = max(x - pad, 0)
+                        py1 = max(y - pad, 0)
+                        px2 = min(x + w + pad, cleaned.shape[1])
+                        py2 = min(y + h + pad, cleaned.shape[0])
+                        padded_region = cleaned[py1:py2, px1:px2]
 
-                        text_mask = self.inpainter.create_text_mask(region, local_mask)
-                        result = self.inpainter.remove_text_with_fallback(
-                            region, text_mask,
-                            quality_threshold=self._quality_threshold,
-                            constraint_mask=local_mask,
+                        # Build bubble mask for the padded crop
+                        if bubble.mask is not None:
+                            padded_mask = bubble.mask[py1:py2, px1:px2]
+                        else:
+                            padded_mask = np.ones(
+                                (py2 - py1, px2 - px1), dtype=np.uint8
+                            ) * 255
+
+                        # Expand mask for text detection to cover overflow
+                        expand_px = pad
+                        expand_kernel = cv2.getStructuringElement(
+                            cv2.MORPH_ELLIPSE,
+                            (expand_px * 2 + 1, expand_px * 2 + 1),
                         )
-                        cleaned[y : y + h, x : x + w] = result.image
+                        detect_mask = cv2.dilate(
+                            padded_mask, expand_kernel, iterations=1
+                        )
+
+                        text_mask = self.inpainter.create_text_mask(
+                            padded_region, detect_mask,
+                        )
+
+                        # Exclude bubble contour ring from text mask so
+                        # the outline is preserved during inpainting.
+                        contour_k = cv2.getStructuringElement(
+                            cv2.MORPH_ELLIPSE, (7, 7),
+                        )
+                        contour_ring = cv2.subtract(
+                            cv2.dilate(padded_mask, contour_k, iterations=1),
+                            cv2.erode(padded_mask, contour_k, iterations=1),
+                        )
+                        text_mask = cv2.subtract(text_mask, contour_ring)
+
+                        result = self.inpainter.remove_text_with_fallback(
+                            padded_region, text_mask,
+                            quality_threshold=self._quality_threshold,
+                            constraint_mask=detect_mask,
+                        )
+                        cleaned[py1:py2, px1:px2] = result.image
                         inpaint_results.append(result)
                     except Exception as e:
                         logger.warning("Inpainting failed for bubble %d: %s", bubble.id, e)

@@ -95,10 +95,10 @@ class TestSingleBubbleOCRFailure:
             ]
         )
         pipeline.inpainter.create_text_mask = MagicMock(
-            return_value=np.ones((50, 50), dtype=np.uint8) * 255
+            side_effect=lambda region, mask: np.ones(region.shape[:2], dtype=np.uint8) * 255
         )
         pipeline.inpainter.remove_text_with_fallback = MagicMock(
-            side_effect=lambda region, mask, quality_threshold=0.5: _good_inpaint_result(region)
+            side_effect=lambda region, mask, quality_threshold=0.5, constraint_mask=None: _good_inpaint_result(region)
         )
         pipeline.typesetter.typeset_text = MagicMock(
             side_effect=lambda img, text, bbox, **kw: TypesetResult(
@@ -150,7 +150,7 @@ class TestSingleBubbleInpaintFailure:
             return _good_inpaint_result(region)
 
         pipeline.inpainter.create_text_mask = MagicMock(
-            return_value=np.ones((50, 50), dtype=np.uint8) * 255
+            side_effect=lambda region, mask: np.ones(region.shape[:2], dtype=np.uint8) * 255
         )
         pipeline.inpainter.remove_text_with_fallback = MagicMock(side_effect=mock_remove_text)
         pipeline.typesetter.typeset_text = MagicMock(
@@ -193,10 +193,10 @@ class TestSingleBubbleTypesetFailure:
             side_effect=lambda texts, src, tgt: [_good_translation() for _ in texts]
         )
         pipeline.inpainter.create_text_mask = MagicMock(
-            return_value=np.ones((50, 50), dtype=np.uint8) * 255
+            side_effect=lambda region, mask: np.ones(region.shape[:2], dtype=np.uint8) * 255
         )
         pipeline.inpainter.remove_text_with_fallback = MagicMock(
-            side_effect=lambda region, mask, quality_threshold=0.5: _good_inpaint_result(region)
+            side_effect=lambda region, mask, quality_threshold=0.5, constraint_mask=None: _good_inpaint_result(region)
         )
 
         # Typesetting: fail on 2nd call (bubble index 1)
