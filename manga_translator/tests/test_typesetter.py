@@ -3,7 +3,9 @@
 import numpy as np
 import pytest
 
-from manga_translator.components.typesetter import Typesetter, TypesetResult, TextLayout
+from manga_translator.components.typesetter import (
+    Typesetter, TypesetResult, TextLayout, _is_cjk_char,
+)
 
 
 class TestTypesetter:
@@ -61,3 +63,238 @@ class TestTypesetter:
         bbox = (10, 10, 30, 30)
         result = ts.typeset_text(image, "Hi", bbox)
         assert isinstance(result, TypesetResult)
+
+
+class TestCJKDetection:
+    def test_cjk_ideograph(self):
+        assert _is_cjk_char("漫") is True
+
+    def test_hiragana(self):
+        assert _is_cjk_char("あ") is True
+
+    def test_katakana(self):
+        assert _is_cjk_char("ア") is True
+
+    def test_hangul(self):
+        assert _is_cjk_char("한") is True
+
+    def test_latin(self):
+        assert _is_cjk_char("A") is False
+
+    def test_digit(self):
+        assert _is_cjk_char("5") is False
+
+    def test_fullwidth(self):
+        assert _is_cjk_char("Ａ") is True  # fullwidth A
+
+
+class TestOrientationDetection:
+    def test_tall_bubble_ja(self):
+        """Tall bubble with Japanese text → vertical."""
+        result = Typesetter.detect_orientation("こんにちは", (0, 0, 50, 200), "ja")
+        assert result == "vertical"
+
+    def test_wide_bubble_ja(self):
+        """Wide bubble → horizontal regardless of language."""
+        result = Typesetter.detect_orientation("こんにちは", (0, 0, 200, 50), "ja")
+        assert result == "horizontal"
+
+    def test_tall_bubble_english(self):
+        """Tall bubble with English text → horizontal (not CJK)."""
+        result = Typesetter.detect_orientation("Hello world", (0, 0, 50, 200), "en")
+        assert result == "horizontal"
+
+    def test_tall_bubble_cjk_content_no_lang(self):
+        """Tall bubble with CJK content, no language hint → vertical."""
+        result = Typesetter.detect_orientation("漫画翻訳", (0, 0, 40, 200), "")
+        assert result == "vertical"
+
+    def test_square_bubble(self):
+        """Square bubble → horizontal (aspect ratio ≈ 1)."""
+        result = Typesetter.detect_orientation("テスト", (0, 0, 100, 100), "ja")
+        assert result == "horizontal"
+
+    def test_very_tall_mixed(self):
+        """Very tall bubble (>2.0 ratio) with mixed CJK content → vertical."""
+        result = Typesetter.detect_orientation("漫画ABC", (0, 0, 40, 200), "")
+        assert result == "vertical"
+
+
+class TestVerticalTypesetting:
+    def test_vertical_simple(self):
+        ts = Typesetter()
+        image = np.full((300, 200, 3), 255, dtype=np.uint8)
+        bbox = (20, 20, 60, 260)  # tall narrow bubble
+        result = ts.typeset_vertical(image, "こんにちは", bbox)
+        assert isinstance(result, TypesetResult)
+        assert result.layout.orientation == "vertical"
+        assert result.image.shape == image.shape
+
+    def test_vertical_empty_text(self):
+        ts = Typesetter()
+        image = np.full((200, 200, 3), 255, dtype=np.uint8)
+        result = ts.typeset_vertical(image, "", (10, 10, 50, 180))
+        assert result.layout.lines == []
+        assert result.layout.orientation == "vertical"
+
+    def test_vertical_multicolumn(self):
+        ts = Typesetter()
+        image = np.full((200, 300, 3), 255, dtype=np.uint8)
+        bbox = (10, 10, 280, 180)
+        # Long text should create multiple columns
+        long_text = "あいうえおかきくけこさしすせそたちつてと"
+        result = ts.typeset_vertical(image, long_text, bbox)
+        assert isinstance(result, TypesetResult)
+        assert len(result.layout.lines) >= 1
+
+    def test_vertical_text_mask(self):
+        ts = Typesetter()
+        image = np.full((300, 200, 3), 255, dtype=np.uint8)
+        bbox = (20, 20, 60, 260)
+        result = ts.typeset_vertical(image, "テスト", bbox)
+        assert result.text_mask.shape == image.shape[:2]
+        # Some pixels should be marked as text
+        assert np.any(result.text_mask > 0)
+
+    def test_auto_orientation_dispatches_vertical(self):
+        """typeset_text with orientation='auto' should detect and dispatch vertical."""
+        ts = Typesetter()
+        image = np.full((400, 150, 3), 255, dtype=np.uint8)
+        bbox = (10, 10, 50, 380)  # very tall, narrow
+        result = ts.typeset_text(
+            image, "日本語テスト", bbox,
+            orientation="auto", source_lang="ja",
+        )
+        assert result.layout.orientation == "vertical"
+
+    def test_forced_horizontal(self):
+        """orientation='horizontal' should override auto-detection."""
+        ts = Typesetter()
+        image = np.full((400, 150, 3), 255, dtype=np.uint8)
+        bbox = (10, 10, 50, 380)
+        result = ts.typeset_text(
+            image, "日本語テスト", bbox,
+            orientation="horizontal", source_lang="ja",
+        )
+        assert result.layout.orientation == "horizontal"
+
+    def test_forced_vertical(self):
+        """orientation='vertical' should force vertical even for wide bubble."""
+        ts = Typesetter()
+        image = np.full((150, 400, 3), 255, dtype=np.uint8)
+        bbox = (10, 10, 380, 130)
+        result = ts.typeset_text(
+            image, "テスト", bbox,
+            orientation="vertical", source_lang="ja",
+        )
+        assert result.layout.orientation == "vertical"
+
+    def test_vertical_wrap(self):
+        """_wrap_vertical should break text into columns."""
+        ts = Typesetter()
+        from PIL import ImageFont
+        font = ImageFont.load_default()
+        columns = ts._wrap_vertical("あいうえおかきくけこ", font, 100, 20)
+        assert isinstance(columns, list)
+        assert all(isinstance(c, str) for c in columns)
+
+    def test_punctuation_mapping(self):
+        """Vertical punctuation map should have correct entries."""
+        ts = Typesetter()
+        assert ts._VERTICAL_PUNCTUATION_MAP["「"] == "﹁"
+        assert ts._VERTICAL_PUNCTUATION_MAP["」"] == "﹂"
+
+
+class TestTokenizeForWrap:
+    def test_latin_words(self):
+        tokens = Typesetter._tokenize_for_wrap("Hello world")
+        assert "Hello" in tokens
+        # "world" should have a space prefix
+        assert any("world" in t for t in tokens)
+
+    def test_cjk_chars(self):
+        tokens = Typesetter._tokenize_for_wrap("漫画")
+        assert "漫" in tokens
+        assert "画" in tokens
+
+    def test_mixed_content(self):
+        tokens = Typesetter._tokenize_for_wrap("Hello漫画World")
+        assert "Hello" in tokens
+        assert "漫" in tokens
+        assert "画" in tokens
+        assert any("World" in t for t in tokens)
+
+    def test_empty(self):
+        tokens = Typesetter._tokenize_for_wrap("")
+        assert tokens == []
+
+
+class TestSmartLineBreaking:
+    def test_cjk_wrapping(self):
+        """CJK text should break at character boundaries."""
+        ts = Typesetter()
+        from PIL import ImageFont
+        font = ImageFont.load_default()
+        lines = ts.wrap_text("あいうえおかきくけこ", font, 50)
+        assert len(lines) >= 1
+        # Each line should fit within the width
+        for line in lines:
+            bbox = font.getbbox(line)
+            assert (bbox[2] - bbox[0]) <= 50 or len(line) == 1
+
+    def test_preserves_explicit_newlines(self):
+        ts = Typesetter()
+        from PIL import ImageFont
+        font = ImageFont.load_default()
+        lines = ts.wrap_text("Line one\nLine two", font, 500)
+        assert len(lines) >= 2
+
+    def test_empty_paragraph(self):
+        ts = Typesetter()
+        from PIL import ImageFont
+        font = ImageFont.load_default()
+        lines = ts.wrap_text("Before\n\nAfter", font, 500)
+        assert "" in lines
+
+
+class TestAlignment:
+    def test_left_alignment(self):
+        ts = Typesetter(alignment="left")
+        assert ts.alignment == "left"
+        image = np.full((200, 300, 3), 255, dtype=np.uint8)
+        result = ts.typeset_text(image, "Hi", (50, 50, 200, 100))
+        assert isinstance(result, TypesetResult)
+
+    def test_right_alignment(self):
+        ts = Typesetter(alignment="right")
+        assert ts.alignment == "right"
+        image = np.full((200, 300, 3), 255, dtype=np.uint8)
+        result = ts.typeset_text(image, "Hi", (50, 50, 200, 100))
+        assert isinstance(result, TypesetResult)
+
+    def test_center_alignment_default(self):
+        ts = Typesetter()
+        assert ts.alignment == "center"
+
+
+class TestFontCategories:
+    def test_categories_exist(self):
+        assert "dialogue" in Typesetter.FONT_CATEGORIES
+        assert "narration" in Typesetter.FONT_CATEGORIES
+        assert "sfx" in Typesetter.FONT_CATEGORIES
+        assert "emphasis" in Typesetter.FONT_CATEGORIES
+
+    def test_find_font_by_category(self):
+        ts = Typesetter()
+        # May or may not find a font, but shouldn't crash
+        result = ts.find_font_by_category("dialogue")
+        assert result is None or isinstance(result, str)
+
+    def test_find_font_unknown_category(self):
+        ts = Typesetter()
+        result = ts.find_font_by_category("nonexistent")
+        assert result is None
+
+    def test_font_category_init(self):
+        ts = Typesetter(font_category="sfx")
+        assert ts.font_category == "sfx"

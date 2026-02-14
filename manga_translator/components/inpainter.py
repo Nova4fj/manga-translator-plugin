@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import logging
 from dataclasses import dataclass
-from typing import Tuple, Optional
+from typing import List, Tuple, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,7 @@ class InpaintResult:
 class Inpainter:
     """Removes text from manga bubbles using inpainting techniques."""
 
-    METHODS = ("opencv_telea", "opencv_ns", "blur", "auto")
+    METHODS = ("opencv_telea", "opencv_ns", "blur", "lama", "auto")
 
     def __init__(
         self,
@@ -28,6 +28,8 @@ class Inpainter:
         inpaint_radius: int = 5,
         blur_kernel_size: int = 15,
         mask_dilation: int = 5,
+        lama_model_dir: Optional[str] = None,
+        lama_device: str = "auto",
     ):
         if method not in self.METHODS:
             raise ValueError(
@@ -38,10 +40,169 @@ class Inpainter:
         self.inpaint_radius = inpaint_radius
         self.blur_kernel_size = blur_kernel_size
         self.mask_dilation = mask_dilation
+        self._lama_model_dir = lama_model_dir
+        self._lama_device = lama_device
+        self._neural_inpainter = None
+
+    # ------------------------------------------------------------------
+    # Neural backend
+    # ------------------------------------------------------------------
+
+    def _get_neural_inpainter(self):
+        """Lazy-load the neural inpainter."""
+        if self._neural_inpainter is None:
+            from manga_translator.components.neural_inpainter import NeuralInpainter
+            self._neural_inpainter = NeuralInpainter(
+                model_dir=self._lama_model_dir,
+                device=self._lama_device,
+            )
+        return self._neural_inpainter
+
+    def is_neural_available(self) -> bool:
+        """Check if neural inpainting (LaMa) is available."""
+        try:
+            return self._get_neural_inpainter().is_available()
+        except Exception:
+            return False
+
+    def inpaint_lama(
+        self, image: np.ndarray, mask: np.ndarray
+    ) -> np.ndarray:
+        """Neural inpainting using LaMa model.
+
+        Produces significantly higher quality results than OpenCV methods,
+        especially for complex backgrounds (screentone, gradients, patterns).
+        Falls back to OpenCV Telea if the model is unavailable.
+        """
+        neural = self._get_neural_inpainter()
+        if not neural.is_available():
+            logger.warning("LaMa model not available, falling back to opencv_telea")
+            return self.inpaint_telea(image, mask)
+
+        try:
+            return neural.inpaint(image, mask)
+        except Exception as e:
+            logger.error("LaMa inpainting failed: %s. Falling back to opencv_telea.", e)
+            return self.inpaint_telea(image, mask)
+
+    def inpaint_lama_regions(
+        self,
+        image: np.ndarray,
+        mask: np.ndarray,
+        bboxes: List[Tuple[int, int, int, int]],
+        padding: int = 32,
+    ) -> np.ndarray:
+        """Batch neural inpainting — process each region separately for efficiency.
+
+        Args:
+            image: Full page BGR image.
+            mask: Full page mask (255 = inpaint).
+            bboxes: List of (x, y, w, h) bounding boxes for each text region.
+            padding: Extra context pixels around each bbox.
+
+        Returns:
+            Inpainted full-page image.
+        """
+        neural = self._get_neural_inpainter()
+        if not neural.is_available():
+            logger.warning("LaMa not available, falling back to opencv_telea for batch")
+            return self.inpaint_telea(image, mask)
+
+        result = image.copy()
+        for bbox in bboxes:
+            try:
+                result = neural.inpaint_region(result, mask, bbox, padding=padding)
+            except Exception as e:
+                logger.warning("LaMa region inpaint failed for bbox %s: %s", bbox, e)
+                # Fall back to OpenCV for this region
+                x, y, w, h = bbox
+                x1, y1 = max(x - padding, 0), max(y - padding, 0)
+                x2 = min(x + w + padding, image.shape[1])
+                y2 = min(y + h + padding, image.shape[0])
+                crop_mask = mask[y1:y2, x1:x2]
+                crop_img = result[y1:y2, x1:x2]
+                inpainted = cv2.inpaint(
+                    self._ensure_bgr(crop_img), crop_mask,
+                    self.inpaint_radius, cv2.INPAINT_TELEA
+                )
+                if crop_img.ndim == 2:
+                    inpainted = cv2.cvtColor(inpainted, cv2.COLOR_BGR2GRAY)
+                result[y1:y2, x1:x2] = inpainted
+        return result
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    def remove_text_with_fallback(
+        self,
+        image: np.ndarray,
+        text_mask: np.ndarray,
+        quality_threshold: float = 0.5,
+    ) -> InpaintResult:
+        """Remove text with automatic quality-based fallback.
+
+        Tries the configured method first.  If the quality score is below
+        *quality_threshold* and the method is ``"lama"``, falls back to
+        OpenCV Telea.  If the initial method was an OpenCV variant and
+        LaMa is available, tries LaMa as an alternative.
+
+        Returns the best result by quality score.
+        """
+        primary = self.remove_text(image, text_mask)
+
+        if primary.quality_score >= quality_threshold:
+            return primary
+
+        logger.info(
+            "Primary inpainting quality %.3f < threshold %.3f, trying fallback",
+            primary.quality_score, quality_threshold,
+        )
+
+        # Determine fallback method
+        if primary.method_used == "lama":
+            fallback_method = "opencv_telea"
+        elif self.is_neural_available():
+            fallback_method = "lama"
+        elif primary.method_used == "opencv_telea":
+            fallback_method = "opencv_ns"
+        else:
+            fallback_method = "opencv_telea"
+
+        # Don't retry the same method
+        if fallback_method == primary.method_used:
+            return primary
+
+        # Run fallback
+        mask = self._ensure_mask(text_mask)
+        kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (self.mask_dilation * 2 + 1, self.mask_dilation * 2 + 1),
+        )
+        dilated_mask = cv2.dilate(mask, kernel, iterations=1)
+
+        if fallback_method == "lama":
+            fallback_img = self.inpaint_lama(image, dilated_mask)
+        elif fallback_method == "opencv_ns":
+            fallback_img = self.inpaint_navier_stokes(image, dilated_mask)
+        else:
+            fallback_img = self.inpaint_telea(image, dilated_mask)
+
+        fallback_quality = self.assess_quality(image, fallback_img, dilated_mask)
+
+        if fallback_quality > primary.quality_score:
+            logger.info(
+                "Fallback %s (quality %.3f) beat primary %s (%.3f)",
+                fallback_method, fallback_quality,
+                primary.method_used, primary.quality_score,
+            )
+            return InpaintResult(
+                image=fallback_img,
+                method_used=fallback_method,
+                quality_score=fallback_quality,
+            )
+
+        return primary
 
     def remove_text(
         self, image: np.ndarray, text_mask: np.ndarray
@@ -81,7 +242,9 @@ class Inpainter:
             logger.info("Auto-selected inpainting method: %s", chosen_method)
 
         # Dispatch --------------------------------------------------------
-        if chosen_method == "opencv_telea":
+        if chosen_method == "lama":
+            inpainted = self.inpaint_lama(image, dilated_mask)
+        elif chosen_method == "opencv_telea":
             inpainted = self.inpaint_telea(image, dilated_mask)
         elif chosen_method == "opencv_ns":
             inpainted = self.inpaint_navier_stokes(image, dilated_mask)
@@ -338,8 +501,26 @@ class Inpainter:
         var_diff = abs(var_inner - var_surround) / max_var
         var_score = max(0.0, 1.0 - var_diff)
 
+        # --- Texture consistency score ---
+        # Compare Laplacian energy (a texture measure) between inpainted
+        # and surrounding regions.  Similar texture energy = good.
+        lap = cv2.Laplacian(inp_gray, cv2.CV_64F)
+        if np.count_nonzero(mask) > 0 and np.count_nonzero(surround_mask) > 0:
+            lap_inner = float(np.mean(np.abs(lap[mask > 0])))
+            lap_surround = float(np.mean(np.abs(lap[surround_mask > 0])))
+            max_lap = max(lap_inner, lap_surround, 1.0)
+            texture_diff = abs(lap_inner - lap_surround) / max_lap
+            texture_score = max(0.0, 1.0 - texture_diff)
+        else:
+            texture_score = 0.5
+
         # Weighted combination
-        quality = 0.40 * colour_score + 0.35 * edge_score + 0.25 * var_score
+        quality = (
+            0.30 * colour_score
+            + 0.30 * edge_score
+            + 0.20 * var_score
+            + 0.20 * texture_score
+        )
         return round(min(max(quality, 0.0), 1.0), 4)
 
     def analyze_background_complexity(
@@ -399,7 +580,7 @@ class Inpainter:
 
         * Simple / uniform background  -> ``"blur"`` (fastest, cleanest)
         * Moderate complexity           -> ``"opencv_telea"``
-        * High complexity (screentone)  -> ``"opencv_ns"``
+        * High complexity (screentone)  -> ``"lama"`` if available, else ``"opencv_ns"``
         """
         complexity = self.analyze_background_complexity(image, mask)
         logger.debug("Background complexity: %.3f", complexity)
@@ -409,6 +590,8 @@ class Inpainter:
         elif complexity < 0.55:
             return "opencv_telea"
         else:
+            if self.is_neural_available():
+                return "lama"
             return "opencv_ns"
 
     # ------------------------------------------------------------------
