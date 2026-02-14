@@ -58,6 +58,9 @@ class BubbleDetector:
         preprocessed = self.preprocess_image(image)
         contours = self.find_bubble_contours(preprocessed)
 
+        # Precompute ink-bounded contours for interior validation
+        ink_contours = self._find_ink_bounded_contours(image)
+
         bubbles: List[BubbleRegion] = []
         bubble_id = 0
 
@@ -86,6 +89,10 @@ class BubbleDetector:
 
             # Only keep detections with meaningful confidence
             if confidence < 0.15:
+                continue
+
+            # Interior content check — reject regions not bounded by ink
+            if not self._is_bubble_interior(image, contour, (x, y, w, h), ink_contours):
                 continue
 
             moments = cv2.moments(contour)
@@ -358,6 +365,117 @@ class BubbleDetector:
         raw_score += shape_bonus.get(shape_type, 0.0)
 
         return float(np.clip(raw_score, 0.0, 1.0))
+
+    # ------------------------------------------------------------------
+    # Interior content check
+    # ------------------------------------------------------------------
+
+    def _find_ink_bounded_contours(self, image: np.ndarray) -> List[np.ndarray]:
+        """Find contours of white regions enclosed by dark ink lines.
+
+        Real manga speech bubbles are white areas enclosed by drawn ink
+        outlines.  This method thresholds for dark ink, closes gaps,
+        inverts, and extracts contours of the resulting bounded white
+        regions.  Only contours within ``[min_area, max_area]`` are
+        returned.
+        """
+        if len(image.shape) == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = image.copy()
+
+        # Identify dark ink strokes (outlines, text, panel borders)
+        _, dark_mask = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY_INV)
+
+        # Close small gaps in ink lines so bubble outlines become continuous
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        dark_closed = cv2.dilate(dark_mask, kernel, iterations=2)
+
+        # Invert: white regions bounded by ink become foreground objects
+        white_bounded = cv2.bitwise_not(dark_closed)
+
+        # Flood-fill from the image corners to remove background (white
+        # regions connected to the border).  Only truly enclosed white
+        # regions (inside ink outlines) survive.
+        h, w = white_bounded.shape[:2]
+        flood_mask = np.zeros((h + 2, w + 2), dtype=np.uint8)
+        # Fill from all four corners to handle border-touching regions
+        for seed in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)]:
+            if white_bounded[seed[1], seed[0]] == 255:
+                cv2.floodFill(white_bounded, flood_mask, seed, 0)
+
+        contours, _ = cv2.findContours(
+            white_bounded, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+
+        # Keep only bubble-sized contours; also reject contours that span
+        # most of the image (those are background, not individual bubbles).
+        img_area = gray.shape[0] * gray.shape[1]
+        max_ink_area = min(self.max_area, int(img_area * 0.3))
+        return [c for c in contours
+                if self.min_area <= cv2.contourArea(c) <= max_ink_area]
+
+    def _is_bubble_interior(
+        self,
+        image: np.ndarray,
+        contour: np.ndarray,
+        bbox: Tuple[int, int, int, int],
+        ink_contours: List[np.ndarray],
+    ) -> bool:
+        """Return True if *contour* looks like a speech bubble interior.
+
+        Two checks:
+        1. **Interior whiteness**: the median brightness of pixels inside
+           the contour must be high (>= 220).  This rejects artwork,
+           coloured regions, and dark areas.
+        2. **Ink-bounded match**: the contour must overlap significantly
+           with a *specific* ink-bounded contour (a distinct white region
+           enclosed by dark ink lines).  Real speech bubbles are enclosed
+           by drawn ink outlines; random bright patches on clothing or
+           skin are not enclosed.
+        """
+        x, y, w, h = bbox
+        img_h, img_w = image.shape[:2]
+        x1, y1 = max(x, 0), max(y, 0)
+        x2, y2 = min(x + w, img_w), min(y + h, img_h)
+
+        # Local mask for the contour within the bbox
+        local_mask = np.zeros((img_h, img_w), dtype=np.uint8)
+        cv2.drawContours(local_mask, [contour], 0, color=255, thickness=cv2.FILLED)
+
+        # --- Check 1: interior median brightness ---
+        roi = image[y1:y2, x1:x2]
+        if len(roi.shape) == 3:
+            gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        else:
+            gray_roi = roi
+        local_roi_mask = local_mask[y1:y2, x1:x2]
+        pixels = gray_roi[local_roi_mask == 255]
+        if len(pixels) == 0:
+            return False
+
+        median_brightness = float(np.median(pixels))
+        if median_brightness < 220:
+            return False
+
+        # --- Check 2: overlap with a distinct ink-bounded contour ---
+        contour_area = int(np.sum(local_mask > 0))
+        if contour_area == 0:
+            return False
+
+        for ink_cnt in ink_contours:
+            ink_mask = np.zeros((img_h, img_w), dtype=np.uint8)
+            cv2.drawContours(ink_mask, [ink_cnt], 0, color=255, thickness=cv2.FILLED)
+            overlap = cv2.bitwise_and(local_mask, ink_mask)
+            overlap_area = int(np.sum(overlap > 0))
+            # The candidate should overlap >=50% with a single ink-bounded region
+            if overlap_area >= contour_area * 0.5:
+                # And the ink-bounded region should also have white interior
+                ink_pixels = gray_roi[ink_mask[y1:y2, x1:x2] == 255] if ink_mask[y1:y2, x1:x2].any() else np.array([])
+                if len(ink_pixels) > 0 and float(np.median(ink_pixels)) >= 220:
+                    return True
+
+        return False
 
     # ------------------------------------------------------------------
     # Mask creation
