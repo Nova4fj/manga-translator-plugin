@@ -159,6 +159,7 @@ class Typesetter:
         bubble_mask: Optional[np.ndarray] = None,
         orientation: str = "auto",
         source_lang: str = "",
+        font_override: Optional[str] = None,
     ) -> TypesetResult:
         """Render translated *text* into a bubble region on *image*.
 
@@ -211,7 +212,10 @@ class Typesetter:
         available_height = max(bh - 2 * pad_y, 1)
 
         # 2. Resolve the font file.
-        font_path = self.find_font(self.default_font)
+        if font_override:
+            font_path = font_override
+        else:
+            font_path = self.find_font(self.default_font)
         if font_path is None:
             logger.warning(
                 "Could not locate font '%s'; falling back to Pillow default.",

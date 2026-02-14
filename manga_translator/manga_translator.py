@@ -18,6 +18,10 @@ from manga_translator.components.translator import TranslationManager, Translati
 from manga_translator.components.inpainter import Inpainter, InpaintResult
 from manga_translator.components.typesetter import Typesetter, TypesetResult
 from manga_translator.components.text_region_filter import TextRegionFilter
+from manga_translator.components.bubble_classifier import BubbleClassifier, BubbleType
+from manga_translator.components.reading_order import ReadingOrderOptimizer
+from manga_translator.components.font_matcher import FontMatcher
+from manga_translator.components.sfx_detector import SFXDetector, SFXRegion
 from manga_translator.translation_context import ContextBuilder
 from manga_translator.config.settings import PluginSettings, SettingsManager
 from manga_translator.core.image_processor import resize_for_processing, scale_bbox
@@ -47,6 +51,7 @@ class PageTranslationResult:
     cleaned_image: np.ndarray  # after inpainting, before typesetting
     bubbles: List[BubbleTranslation] = field(default_factory=list)
     layer_stack: Optional[LayerStack] = None
+    sfx_regions: List['SFXRegion'] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
     qc_report: Optional['QCReport'] = None
     perf_summary: str = ""
@@ -75,6 +80,9 @@ class MangaTranslationPipeline:
         perf_monitor: Optional[PerfMonitor] = None,
         quality_checker: Optional[QualityChecker] = None,
         translation_memory: Optional[TranslationMemory] = None,
+        reading_direction: str = "rtl",
+        detect_sfx: bool = False,
+        fonts_dir: Optional[str] = None,
     ):
         if settings is None:
             settings = SettingsManager().get_settings()
@@ -135,6 +143,13 @@ class MangaTranslationPipeline:
         self.text_filter = TextRegionFilter()
         self.context_builder = ContextBuilder(context_window=2)
 
+        # Phase 10 components
+        self.classifier = BubbleClassifier()
+        self.reading_order = ReadingOrderOptimizer(reading_direction=reading_direction)
+        self.font_matcher = FontMatcher(fonts_dir=fonts_dir)
+        self._detect_sfx = detect_sfx
+        self.sfx_detector = SFXDetector() if detect_sfx else None
+
     def translate_page(
         self,
         image: np.ndarray,
@@ -183,11 +198,37 @@ class MangaTranslationPipeline:
                     from manga_translator.region_mask import filter_bubbles_by_mask
                     bubbles = filter_bubbles_by_mask(bubbles, exclusion_mask)
                     logger.info("After exclusion filtering: %d bubbles", len(bubbles))
+
+                # Classify bubble types
+                if bubbles:
+                    for bubble in bubbles:
+                        try:
+                            cr = self.classifier.classify(
+                                bubble.contour, image_shape=image.shape[:2], bbox=bubble.bbox,
+                            )
+                            bubble.bubble_type = cr.bubble_type.value
+                        except Exception:
+                            bubble.bubble_type = "unknown"
+
+                    # Sort in reading order
+                    bubbles = self.reading_order.sort_bubbles(bubbles)
+                    logger.info("Sorted %d bubbles in %s reading order", len(bubbles), self.reading_order.reading_direction)
+
             except Exception as e:
                 logger.error("Bubble detection failed: %s", e, exc_info=True)
                 errors.append(f"Bubble detection failed: {e}")
                 bubbles = []
         tracker.complete_step(0)
+
+        # Optional SFX detection
+        sfx_regions: List[SFXRegion] = []
+        if self.sfx_detector and bubbles:
+            try:
+                sfx_regions = self.sfx_detector.detect_sfx(image, bubbles)
+                logger.info("Detected %d SFX regions", len(sfx_regions))
+            except Exception as e:
+                logger.warning("SFX detection failed: %s", e)
+                errors.append(f"SFX detection failed: {e}")
 
         if not bubbles:
             return PageTranslationResult(
@@ -402,6 +443,17 @@ class MangaTranslationPipeline:
                             typeset_results.append(None)
                             continue
 
+                        # Select font based on bubble type
+                        font_override = None
+                        if bubble.bubble_type:
+                            try:
+                                bt = BubbleType(bubble.bubble_type)
+                                font_profile = self.font_matcher.match_font(bt, translation.translated_text, tgt)
+                                if font_profile.path:
+                                    font_override = font_profile.path
+                            except (ValueError, Exception):
+                                pass
+
                         result = self.typesetter.typeset_text(
                             final,
                             translation.translated_text,
@@ -409,6 +461,7 @@ class MangaTranslationPipeline:
                             bubble_mask=bubble.mask,
                             orientation=self.settings.typesetting.orientation,
                             source_lang=src,
+                            font_override=font_override,
                         )
                         final = result.image
                         typeset_results.append(result)
@@ -463,6 +516,7 @@ class MangaTranslationPipeline:
             final_image=final,
             cleaned_image=cleaned,
             bubbles=bubble_translations,
+            sfx_regions=sfx_regions,
             layer_stack=layer_stack,
             errors=errors,
             qc_report=qc_report,
@@ -489,6 +543,9 @@ def translate_file(
     enable_qc: bool = False,
     enable_perf: bool = False,
     exclude_regions: Optional[str] = None,
+    reading_direction: str = "rtl",
+    detect_sfx: bool = False,
+    fonts_dir: Optional[str] = None,
 ) -> PageTranslationResult:
     """Convenience function: translate a manga image file.
 
@@ -546,6 +603,9 @@ def translate_file(
         perf_monitor=perf_monitor,
         quality_checker=quality_checker,
         translation_memory=translation_memory,
+        reading_direction=reading_direction,
+        detect_sfx=detect_sfx,
+        fonts_dir=fonts_dir,
     )
 
     def console_progress(step, total, message):

@@ -16,6 +16,7 @@ class BubbleRegion:
     area: float
     confidence: float  # 0.0 to 1.0
     shape_type: str  # "oval", "rectangle", "irregular", "thought"
+    bubble_type: Optional[str] = None  # semantic type from BubbleClassifier
     mask: Optional[np.ndarray] = None  # binary mask of the bubble interior
 
 

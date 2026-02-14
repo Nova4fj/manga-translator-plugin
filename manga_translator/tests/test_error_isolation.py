@@ -112,10 +112,10 @@ class TestSingleBubbleOCRFailure:
 
         # Pipeline did not crash
         assert result is not None
-        # Errors were recorded for bubble 1
-        ocr_errors = [e for e in result.errors if "OCR failed for bubble 1" in e]
+        # Errors were recorded for one bubble's OCR failure
+        ocr_errors = [e for e in result.errors if "OCR failed for bubble" in e]
         assert len(ocr_errors) == 1
-        # Bubbles 0 and 2 still got valid translations (only valid OCR results pass through)
+        # Two of three bubbles still got valid translations
         assert len(result.bubbles) == 2
         for bt in result.bubbles:
             assert bt.ocr_result.text.startswith("text_")

@@ -159,7 +159,15 @@ def main():
         default=None,
         help="Translation quality preset",
     )
-    parser.add_argument("--version", action="version", version="manga-translator 0.3.0")
+    parser.add_argument(
+        "--reading-direction",
+        choices=["rtl", "ltr"],
+        default="rtl",
+        help="Reading order: rtl (manga) or ltr (manhwa) (default: rtl)",
+    )
+    parser.add_argument("--detect-sfx", action="store_true", help="Enable SFX/onomatopoeia detection")
+    parser.add_argument("--fonts-dir", default=None, help="Custom fonts directory for typesetting")
+    parser.add_argument("--version", action="version", version="manga-translator 0.4.0")
 
     # Subcommands
     check_parser = subparsers.add_parser("check", help="Check dependency status")
@@ -268,6 +276,9 @@ def main():
         enable_qc=args.qc,
         enable_perf=args.perf,
         exclude_regions=args.exclude_region,
+        reading_direction=args.reading_direction,
+        detect_sfx=args.detect_sfx,
+        fonts_dir=args.fonts_dir,
     )
 
     if not args.quiet:
