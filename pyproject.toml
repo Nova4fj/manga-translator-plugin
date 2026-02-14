@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "manga-translator-plugin"
+version = "0.1.0"
+description = "GIMP plugin for automated manga translation"
+readme = "README.md"
+license = {text = "GPL-3.0-or-later"}
+requires-python = ">=3.8"
+dependencies = [
+    "opencv-python>=4.8.0",
+    "numpy>=1.21.0",
+    "Pillow>=9.0.0",
+    "manga-ocr>=0.1.6",
+    "pytesseract>=0.3.10",
+    "openai>=1.0.0",
+    "deepl>=1.12.0",
+    "argostranslate>=1.8.0",
+]
+
+[project.optional-dependencies]
+paddleocr = ["paddleocr>=2.6.0", "paddlepaddle>=2.5.0"]
+gpu = ["torch>=1.13.0", "torchvision>=0.14.0"]
+dev = ["pytest>=7.0", "pytest-cov>=4.0", "ruff>=0.1.0"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+
+[tool.pytest.ini_options]
+testpaths = ["manga_translator/tests"]

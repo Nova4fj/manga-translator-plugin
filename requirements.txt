@@ -1,0 +1,18 @@
+# Core
+opencv-python>=4.8.0
+numpy>=1.21.0
+Pillow>=9.0.0
+
+# OCR
+manga-ocr>=0.1.6
+pytesseract>=0.3.10
+# paddleocr>=2.6.0  # optional, large dependency
+
+# Translation
+openai>=1.0.0
+deepl>=1.12.0
+argostranslate>=1.8.0
+
+# ML (optional, for neural inpainting)
+# torch>=1.13.0
+# torchvision>=0.14.0
