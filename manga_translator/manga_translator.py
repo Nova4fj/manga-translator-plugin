@@ -16,6 +16,8 @@ from manga_translator.components.ocr_engine import OCREngine, OCRResult
 from manga_translator.components.translator import TranslationManager, TranslationResult
 from manga_translator.components.inpainter import Inpainter, InpaintResult
 from manga_translator.components.typesetter import Typesetter, TypesetResult
+from manga_translator.components.text_region_filter import TextRegionFilter
+from manga_translator.translation_context import ContextBuilder
 from manga_translator.config.settings import PluginSettings, SettingsManager
 from manga_translator.core.image_processor import resize_for_processing, scale_bbox
 from manga_translator.core.layer_manager import LayerStack
@@ -129,6 +131,8 @@ class MangaTranslationPipeline:
             font_category=settings.typesetting.font_category,
         )
         self._quality_threshold = settings.inpainting.quality_threshold
+        self.text_filter = TextRegionFilter()
+        self.context_builder = ContextBuilder(context_window=2)
 
     def translate_page(
         self,
@@ -197,6 +201,14 @@ class MangaTranslationPipeline:
                             OCRResult(text="", confidence=0.0, language=src, engine_used="none")
                         )
                         continue
+                    # Pre-filter: skip OCR on non-text regions
+                    score = self.text_filter.analyze_region(region)
+                    if not score.has_text:
+                        ocr_results.append(
+                            OCRResult(text="", confidence=0.0, language=src, engine_used="filtered")
+                        )
+                        logger.debug("Filtered non-text region [%d]: %s (%.2f)", bubble.id, score.region_type, score.confidence)
+                        continue
                     result = self.ocr.extract_text(region, language_hint=src)
                     ocr_results.append(result)
                     logger.debug("OCR [%d]: '%s' (%.2f)", bubble.id, result.text[:50], result.confidence)
@@ -230,55 +242,78 @@ class MangaTranslationPipeline:
             try:
                 texts = [o.text for o in valid_ocr]
 
-                # Check TM for cached translations
-                tm_hits: dict = {}  # index -> target_text
-                texts_to_translate: List[str] = []
-                indices_to_translate: List[int] = []
-                if self._tm:
-                    for idx, text in enumerate(texts):
-                        match = self._tm.lookup_exact(text, src, tgt)
-                        if match:
-                            tm_hits[idx] = match.target_text
-                            logger.debug("TM hit for: '%s'", text[:50])
-                        else:
-                            texts_to_translate.append(text)
-                            indices_to_translate.append(idx)
-                else:
-                    texts_to_translate = texts
-                    indices_to_translate = list(range(len(texts)))
+                # Build page context for better translations
+                page_ctx = self.context_builder.build_page_context(texts)
+                page_prompt = self.context_builder.format_page_prompt(page_ctx)
 
-                # Translate texts not found in TM
-                if texts_to_translate:
-                    batch_results = self.translator.translate_batch(
-                        texts_to_translate, src, tgt
+                # Temporarily enhance context prompt on the actual engine
+                openai_engine = self.translator._engines.get("openai")
+                original_prompt = (
+                    openai_engine._context_prompt if openai_engine else None
+                )
+                if page_prompt and openai_engine:
+                    enhanced = (
+                        f"{original_prompt}\n{page_prompt}"
+                        if original_prompt
+                        else page_prompt
                     )
-                else:
-                    batch_results = []
+                    openai_engine._context_prompt = enhanced
+                    logger.debug("Enhanced context prompt with page context")
 
-                # Merge TM hits and fresh translations
-                fresh_iter = iter(batch_results)
-                for idx in range(len(texts)):
-                    if idx in tm_hits:
-                        translations.append(TranslationResult(
-                            source_text=texts[idx],
-                            translated_text=tm_hits[idx],
-                            source_language=src,
-                            target_language=tgt,
-                            engine_used="translation_memory",
-                            confidence=1.0,
-                        ))
+                try:
+                    # Check TM for cached translations
+                    tm_hits: dict = {}  # index -> target_text
+                    texts_to_translate: List[str] = []
+                    indices_to_translate: List[int] = []
+                    if self._tm:
+                        for idx, text in enumerate(texts):
+                            match = self._tm.lookup_exact(text, src, tgt)
+                            if match:
+                                tm_hits[idx] = match.target_text
+                                logger.debug("TM hit for: '%s'", text[:50])
+                            else:
+                                texts_to_translate.append(text)
+                                indices_to_translate.append(idx)
                     else:
-                        tr = next(fresh_iter)
-                        translations.append(tr)
-                        # Store new translation in TM
-                        if self._tm and tr.translated_text and tr.confidence > 0.3:
-                            self._tm.add_entry(
-                                source_text=tr.source_text,
-                                target_text=tr.translated_text,
-                                source_lang=src,
-                                target_lang=tgt,
-                                quality_score=tr.confidence,
-                            )
+                        texts_to_translate = texts
+                        indices_to_translate = list(range(len(texts)))
+
+                    # Translate texts not found in TM
+                    if texts_to_translate:
+                        batch_results = self.translator.translate_batch(
+                            texts_to_translate, src, tgt
+                        )
+                    else:
+                        batch_results = []
+
+                    # Merge TM hits and fresh translations
+                    fresh_iter = iter(batch_results)
+                    for idx in range(len(texts)):
+                        if idx in tm_hits:
+                            translations.append(TranslationResult(
+                                source_text=texts[idx],
+                                translated_text=tm_hits[idx],
+                                source_language=src,
+                                target_language=tgt,
+                                engine_used="translation_memory",
+                                confidence=1.0,
+                            ))
+                        else:
+                            tr = next(fresh_iter)
+                            translations.append(tr)
+                            # Store new translation in TM
+                            if self._tm and tr.translated_text and tr.confidence > 0.3:
+                                self._tm.add_entry(
+                                    source_text=tr.source_text,
+                                    target_text=tr.translated_text,
+                                    source_lang=src,
+                                    target_lang=tgt,
+                                    quality_score=tr.confidence,
+                                )
+                finally:
+                    # Restore original context prompt
+                    if openai_engine and original_prompt is not None:
+                        openai_engine._context_prompt = original_prompt
 
             except Exception as e:
                 logger.error("Translation failed: %s", e, exc_info=True)
@@ -442,7 +477,14 @@ def translate_file(
         PageTranslationResult
     """
     from manga_translator.core.image_processor import load_image, save_image
+    from manga_translator.input_validator import InputValidator, ValidationError
     import os
+
+    InputValidator.validate_image_path(input_path)
+    InputValidator.validate_language(source_lang, "source_lang")
+    InputValidator.validate_language(target_lang, "target_lang")
+    if output_path:
+        InputValidator.validate_output_path(output_path)
 
     image = load_image(input_path)
 

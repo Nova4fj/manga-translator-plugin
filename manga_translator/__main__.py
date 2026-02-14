@@ -124,6 +124,17 @@ def main():
         parser.print_help()
         return 1
 
+    from manga_translator.input_validator import InputValidator, ValidationError
+    try:
+        InputValidator.validate_image_path(args.input)
+        InputValidator.validate_language(args.source_lang, "source_lang")
+        InputValidator.validate_language(args.target_lang, "target_lang")
+        if args.output:
+            InputValidator.validate_output_path(args.output)
+    except ValidationError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(levelname)s %(name)s: %(message)s",
@@ -208,14 +219,30 @@ def batch_translate(args):
     if args.engine:
         settings.translation.primary_engine = args.engine
 
+    from manga_translator.input_validator import InputValidator, ValidationError
+    try:
+        InputValidator.validate_language(args.source_lang, "source_lang")
+        InputValidator.validate_language(args.target_lang, "target_lang")
+    except ValidationError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    valid_files, validation_errors = InputValidator.validate_batch_paths(args.files)
+    for err in validation_errors:
+        print(f"Warning: {err}", file=sys.stderr)
+
+    if not valid_files:
+        print("Error: No valid input files", file=sys.stderr)
+        return 1
+
     output_dir = args.output_dir
-    total = len(args.files)
+    total = len(valid_files)
     successes = 0
     failures = 0
 
     if args.dry_run:
         print(f"[dry-run] Would batch translate {total} files")
-        for f in args.files:
+        for f in valid_files:
             print(f"  {f}")
         print(f"  Engine: {settings.translation.primary_engine}")
         return 0
@@ -224,7 +251,7 @@ def batch_translate(args):
         print(f"Batch translating {total} files ({args.source_lang} → {args.target_lang})")
         print("=" * 50)
 
-    for i, input_path in enumerate(args.files, 1):
+    for i, input_path in enumerate(valid_files, 1):
         if not os.path.exists(input_path):
             print(f"  [{i}/{total}] SKIP {input_path} (not found)")
             failures += 1
