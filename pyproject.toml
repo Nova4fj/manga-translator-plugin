@@ -4,26 +4,45 @@ build-backend = "setuptools.backends._legacy:_Backend"
 
 [project]
 name = "manga-translator-plugin"
-version = "0.1.0"
-description = "GIMP plugin for automated manga translation"
+version = "0.2.0"
+description = "Automated manga/comic translation: bubble detection, OCR, translation, inpainting, and typesetting. Works as a GIMP plugin or standalone CLI."
 readme = "README.md"
 license = {text = "GPL-3.0-or-later"}
 requires-python = ">=3.8"
+keywords = ["manga", "translation", "ocr", "gimp", "comic", "inpainting"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: End Users/Desktop",
+    "Topic :: Multimedia :: Graphics",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
 dependencies = [
     "opencv-python>=4.8.0",
     "numpy>=1.21.0",
     "Pillow>=9.0.0",
+]
+
+[project.optional-dependencies]
+ocr = ["manga-ocr>=0.1.6", "pytesseract>=0.3.10"]
+paddleocr = ["paddleocr>=2.6.0", "paddlepaddle>=2.5.0"]
+translation = ["openai>=1.0.0", "deepl>=1.12.0", "argostranslate>=1.8.0"]
+gpu = ["torch>=1.13.0", "torchvision>=0.14.0"]
+all = [
     "manga-ocr>=0.1.6",
     "pytesseract>=0.3.10",
     "openai>=1.0.0",
     "deepl>=1.12.0",
     "argostranslate>=1.8.0",
 ]
-
-[project.optional-dependencies]
-paddleocr = ["paddleocr>=2.6.0", "paddlepaddle>=2.5.0"]
-gpu = ["torch>=1.13.0", "torchvision>=0.14.0"]
 dev = ["pytest>=7.0", "pytest-cov>=4.0", "ruff>=0.1.0"]
+
+[project.scripts]
+manga-translator = "manga_translator.__main__:main"
 
 [tool.ruff]
 line-length = 100

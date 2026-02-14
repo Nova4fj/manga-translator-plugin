@@ -1,136 +1,201 @@
-# Manga Translator Plugin for GIMP
+# Manga Translator Plugin
 
-A comprehensive GIMP plugin for automated translation of manga and comic panels from any language to English. This plugin combines computer vision, OCR, machine translation, and intelligent typesetting to provide a seamless workflow for manga translation within GIMP.
+Automated manga/comic translation pipeline: bubble detection, OCR, translation, inpainting, and typesetting. Works as a **GIMP plugin** or **standalone CLI**.
 
-## 🎯 What It Does
+## Features
 
-The Manga Translator Plugin automates the traditionally manual and time-consuming process of manga translation by:
+- **Bubble detection** — Automatic speech bubble finding via OpenCV contour analysis
+- **OCR** — manga-ocr (Japanese-specialized), PaddleOCR, or Tesseract
+- **Translation** — DeepL, OpenAI GPT, or Argos Translate (offline)
+- **Inpainting** — Text removal with OpenCV or LaMa neural inpainting
+- **Typesetting** — Smart text fitting with font category support (dialogue, narration, SFX)
+- **Batch processing** — Multi-threaded parallel page translation
+- **Translation memory** — SQLite-backed exact + fuzzy matching for consistency
+- **Quality control** — Automated checks for untranslated text, length, terminology
+- **Performance monitoring** — Per-stage timing and profiling
+- **Export** — PNG, JPEG, PDF, CBZ output formats
+- **Project management** — Track multi-page translation projects
 
-- **Automatically detecting** speech bubbles and text regions in manga panels
-- **Extracting text** using specialized OCR engines optimized for manga/comics
-- **Translating** the extracted text using multiple translation backends
-- **Removing original text** through intelligent inpainting
-- **Typesetting** translated English text back into the bubbles with appropriate fonts and styling
+## Installation
 
-## 👥 Target Users
+```bash
+# Core only (detection + inpainting)
+pip install -e .
 
-### Primary Users
-- **Scanlation Groups** - Fan translation teams who need to process large volumes of manga chapters efficiently
-- **Professional Manga Translators** - Commercial translators working on licensed manga and webtoons
-- **Manga Enthusiasts** - Individual fans who want to translate favorite series not available in their language
+# With OCR + translation engines
+pip install -e ".[all]"
 
-### Secondary Users
-- **Webcomic Creators** - Artists who want to localize their work into multiple languages
-- **Digital Archivists** - Preservationists working with historical comic materials
-- **Language Learners** - Students using manga as learning material with side-by-side translations
+# Development
+pip install -e ".[all,dev]"
+```
 
-## ✨ Key Features
+## Quick Start
 
-### 🔍 Intelligent Text Detection
-- Advanced speech bubble boundary detection using contour analysis and ML models
-- Handles various bubble shapes: traditional ovals, irregular shapes, thought bubbles, rectangular panels
-- Detects text both inside and outside bubbles (SFX, narration boxes, signs)
+### CLI
 
-### 📖 Multi-Language OCR
-- **Japanese**: Specialized manga-ocr model for mixed hiragana/katakana/kanji text
-- **Chinese**: Traditional and simplified character recognition
-- **Korean**: Hangul text extraction
-- **Universal**: PaddleOCR and Tesseract fallback for any language
-- **Vertical text support** for Asian languages
+```bash
+# Translate a single page
+manga-translator page.png -s ja -t en
 
-### 🌐 Flexible Translation
-- **Cloud APIs**: OpenAI GPT, DeepL, Google Translate
-- **Offline Options**: Argos Translate for privacy-sensitive work
-- **Context-aware**: Maintains character consistency and manga-specific terminology
-- **Customizable dictionaries** for character names and series-specific terms
+# Batch translate
+manga-translator batch pages/*.png -o output/
 
-### 🎨 Advanced Inpainting
-- **Neural inpainting**: LaMa model for seamless text removal
-- **Traditional methods**: GIMP's built-in healing and clone tools as fallback
-- **Smart background reconstruction** that preserves artistic style
+# Use a specific engine
+manga-translator page.png --engine argos
 
-### ✍️ Intelligent Typesetting
-- **Font matching**: Automatically selects appropriate English fonts for different text types
-- **Auto-sizing**: Fits text within bubble boundaries while maintaining readability
-- **Style preservation**: Matches original text styling (bold, italic, outlined text)
-- **Multi-line text wrapping** with proper alignment
+# Quality preset
+manga-translator page.png --preset quality
 
-### 🔧 GIMP Integration
-- **Native plugin**: Seamlessly integrated into GIMP's menu system
-- **Layer management**: Organized output with separate layers for easy editing
-- **Undo support**: Full integration with GIMP's undo system
-- **Batch processing**: Handle multiple pages or entire chapters
+# With quality control + performance report
+manga-translator page.png --qc --perf
 
-## 🎮 Workflow Modes
+# Dry run (show what would happen)
+manga-translator page.png --dry-run
 
-### 🤖 Auto Mode
-One-click translation for fast processing of simple pages
-- Automatic bubble detection → OCR → translation → typesetting
-- Perfect for clean, standard manga layouts
+# Check dependencies
+manga-translator check
+```
 
-### 🎛️ Semi-Auto Mode  
-Balanced approach with user review and control
-- Plugin detects bubbles → user reviews/adjusts → automated processing
-- Ideal for complex layouts or quality-critical work
+### Python API
 
-### ✋ Manual Mode
-Full user control for challenging pages
-- User manually selects regions → OCR → translation → manual text placement
-- Best for artistic panels, unusual layouts, or special effects text
+```python
+from manga_translator.manga_translator import MangaTranslationPipeline, translate_file
+from manga_translator.config.settings import SettingsManager
 
-## 🏆 Success Metrics
+# Simple file translation
+result = translate_file("page.png", source_lang="ja", target_lang="en")
+print(f"{len(result.bubbles)} bubbles, {result.success_rate:.0%} success")
 
-- **Accuracy**: >95% bubble detection rate on standard manga layouts
-- **Speed**: <30 seconds per page for auto mode processing
-- **Quality**: Translation quality comparable to manual scanlation workflows
-- **Usability**: Reduce translation time by 70-80% compared to manual methods
-- **Compatibility**: Support for all major manga formats and GIMP versions
+# With pipeline customization
+from manga_translator.perf_monitor import PerfMonitor
+from manga_translator.quality_control import QualityChecker
+from manga_translator.translation_memory import TranslationMemory
 
-## 📋 Requirements
+settings = SettingsManager().get_settings()
+pipeline = MangaTranslationPipeline(
+    settings,
+    perf_monitor=PerfMonitor(),
+    quality_checker=QualityChecker(),
+    translation_memory=TranslationMemory(),
+)
 
-### GIMP Compatibility
-- **GIMP 2.10**: Python-Fu plugin system
-- **GIMP 3.0**: libgimp Python bindings (future support)
+import cv2
+image = cv2.imread("page.png")
+result = pipeline.translate_page(image, source_lang="ja", target_lang="en")
+```
 
-### System Requirements
-- **OS**: Windows 10+, macOS 10.14+, Linux (Ubuntu 18.04+)
-- **RAM**: 8GB minimum, 16GB recommended for large images
-- **GPU**: NVIDIA GPU recommended for neural model acceleration
-- **Storage**: 2GB for models and dependencies
+### GIMP Plugin
 
-### Dependencies
-- Python 3.8+ with pip
-- PyTorch (for neural models)
-- OpenCV (for computer vision)
-- Specialized OCR libraries (manga-ocr, PaddleOCR)
-- Translation API keys (optional, for cloud services)
+1. Copy the plugin to GIMP's plugin directory
+2. Restart GIMP
+3. Go to **Filters > Manga > Translate Page**
 
-## 🚀 Quick Start
+## Configuration
 
-1. **Install the plugin** via GIMP's plugin manager or manual installation
-2. **Configure translation settings** (API keys, preferred languages)
-3. **Open a manga page** in GIMP
-4. **Run the plugin** from `Filters → Manga → Translate Page`
-5. **Review and adjust** the results as needed
-6. **Export** your translated manga
+Settings are stored at `~/.config/manga-translator/settings.json`.
 
-## 📚 Documentation
+```bash
+# Quality presets: fast, balanced, quality
+manga-translator page.png --preset fast
 
-- [Product Specification](docs/PRODUCT-SPEC.md) - Detailed feature requirements
-- [Technical Architecture](docs/TECHNICAL-ARCHITECTURE.md) - System design and components
-- [Component Specifications](docs/COMPONENT-SPECS.md) - Detailed component APIs
-- [UI Design](docs/UI-DESIGN.md) - Interface mockups and user flows
-- [Implementation Plan](docs/IMPLEMENTATION-PLAN.md) - Development roadmap
-- [Research & Analysis](docs/RESEARCH.md) - Technology comparisons and decisions
+# Environment variables for API keys
+export DEEPL_API_KEY=your-key
+export OPENAI_API_KEY=your-key
+```
 
-## 🤝 Contributing
+### Unified Config Precedence
 
-This project aims to democratize manga translation while respecting copyright and supporting official releases. We encourage contributions that improve translation quality, expand language support, and enhance the user experience.
+1. CLI flags (highest priority)
+2. Project-specific overrides
+3. Config file (`~/.config/manga-translator/settings.json`)
+4. Defaults
 
-## 📄 License
+### Translation Memory
 
-[License details to be determined - likely GPL to match GIMP's licensing]
+```python
+from manga_translator.translation_memory import TranslationMemory
 
----
+tm = TranslationMemory()  # ~/.manga-translator/translation_memory.db
+tm.add_entry("テスト", "Test", source_lang="ja", target_lang="en")
+tm.add_term("ナルト", "Naruto", category="character_name", series="Naruto")
 
-**Note**: This plugin is designed to assist translators and should be used in compliance with copyright laws and manga publisher policies. Always respect official translations and support manga creators.
+# Export/import
+tm.export_json("memory.json")
+tm.import_json("memory.json")
+```
+
+## CLI Reference
+
+```
+manga-translator [OPTIONS] INPUT
+manga-translator batch [OPTIONS] FILES...
+manga-translator check
+
+Options:
+  -o, --output PATH        Output path
+  -s, --source-lang LANG   Source language (default: ja)
+  -t, --target-lang LANG   Target language (default: en)
+  --engine ENGINE          Translation engine: deepl, openai, argos
+  --preset PRESET          Quality preset: fast, balanced, quality
+  --qc                     Enable quality control checks
+  --perf                   Show performance report
+  --tm-db PATH             Translation memory database path
+  --export-format FMT      Output format: png, jpg, pdf, cbz
+  --dry-run                Show plan without executing
+  -v, --verbose            Verbose logging
+  -q, --quiet              Suppress progress output
+  --version                Show version
+```
+
+## Architecture
+
+```
+manga_translator/
+├── __init__.py              # Package init + GIMP auto-registration
+├── __main__.py              # CLI entry point
+├── manga_translator.py      # Main pipeline orchestrator
+├── batch_processor.py       # Multi-threaded batch processing
+├── translation_memory.py    # SQLite TM with fuzzy matching
+├── quality_control.py       # Automated QC checks
+├── perf_monitor.py          # Performance timing
+├── export_manager.py        # Multi-format export (PNG/JPEG/PDF/CBZ)
+├── project_manager.py       # Project tracking
+├── workflow.py              # Semi-auto workflow controller
+├── error_recovery.py        # Error handling + retry logic
+├── components/
+│   ├── bubble_detector.py   # Speech bubble detection
+│   ├── ocr_engine.py        # OCR (manga-ocr, PaddleOCR, Tesseract)
+│   ├── translator.py        # Translation engines
+│   ├── inpainter.py         # Text removal (OpenCV, LaMa)
+│   └── typesetter.py        # Text rendering
+├── config/
+│   ├── settings.py          # Settings management + presets
+│   └── unified_config.py    # Multi-source config merging
+├── core/
+│   ├── image_processor.py   # Image I/O and transforms
+│   ├── layer_manager.py     # Layer stack management
+│   └── plugin_manager.py    # GIMP plugin registration
+└── tests/                   # 380+ tests
+```
+
+## Supported Languages
+
+**Source:** Japanese (ja), Chinese (zh), Korean (ko)
+**Target:** English (en) and others via translation engine
+
+## Development
+
+```bash
+# Run tests
+pytest
+
+# Run with coverage
+pytest --cov=manga_translator
+
+# Check dependencies
+manga-translator check
+```
+
+## License
+
+GPL-3.0-or-later

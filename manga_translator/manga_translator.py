@@ -1,10 +1,15 @@
 """Main translation pipeline — wires all components together."""
 
 import logging
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import List, Optional, Callable, Tuple
 
 import numpy as np
+
+from manga_translator.perf_monitor import PerfMonitor
+from manga_translator.quality_control import QualityChecker, QCReport
+from manga_translator.translation_memory import TranslationMemory
 
 from manga_translator.components.bubble_detector import BubbleDetector, BubbleRegion
 from manga_translator.components.ocr_engine import OCREngine, OCRResult
@@ -40,6 +45,8 @@ class PageTranslationResult:
     bubbles: List[BubbleTranslation] = field(default_factory=list)
     layer_stack: Optional[LayerStack] = None
     errors: List[str] = field(default_factory=list)
+    qc_report: Optional['QCReport'] = None
+    perf_summary: str = ""
 
     @property
     def success_rate(self) -> float:
@@ -59,10 +66,19 @@ class MangaTranslationPipeline:
     Pipeline: Detect bubbles → OCR → Translate → Inpaint → Typeset → Assemble
     """
 
-    def __init__(self, settings: Optional[PluginSettings] = None):
+    def __init__(
+        self,
+        settings: Optional[PluginSettings] = None,
+        perf_monitor: Optional[PerfMonitor] = None,
+        quality_checker: Optional[QualityChecker] = None,
+        translation_memory: Optional[TranslationMemory] = None,
+    ):
         if settings is None:
             settings = SettingsManager().get_settings()
         self.settings = settings
+        self._perf = perf_monitor
+        self._qc = quality_checker
+        self._tm = translation_memory
 
         # Initialize components
         self.detector = BubbleDetector(
@@ -142,20 +158,21 @@ class MangaTranslationPipeline:
 
         # --- Step 1: Bubble Detection ---
         tracker.start_step(0)
-        try:
-            processed_image, scale = resize_for_processing(image, max_dimension=4096)
-            bubbles = self.detector.detect_bubbles(processed_image)
+        with self._perf.track("detection") if self._perf else nullcontext():
+            try:
+                processed_image, scale = resize_for_processing(image, max_dimension=4096)
+                bubbles = self.detector.detect_bubbles(processed_image)
 
-            # Scale bboxes back to original size if resized
-            if scale != 1.0:
-                for b in bubbles:
-                    b.bbox = scale_bbox(b.bbox, scale)
+                # Scale bboxes back to original size if resized
+                if scale != 1.0:
+                    for b in bubbles:
+                        b.bbox = scale_bbox(b.bbox, scale)
 
-            logger.info("Detected %d bubbles", len(bubbles))
-        except Exception as e:
-            logger.error("Bubble detection failed: %s", e, exc_info=True)
-            errors.append(f"Bubble detection failed: {e}")
-            bubbles = []
+                logger.info("Detected %d bubbles", len(bubbles))
+            except Exception as e:
+                logger.error("Bubble detection failed: %s", e, exc_info=True)
+                errors.append(f"Bubble detection failed: {e}")
+                bubbles = []
         tracker.complete_step(0)
 
         if not bubbles:
@@ -170,21 +187,22 @@ class MangaTranslationPipeline:
         # --- Step 2: OCR ---
         tracker.start_step(1)
         ocr_results: List[OCRResult] = []
-        try:
-            for bubble in bubbles:
-                x, y, w, h = bubble.bbox
-                region = image[y : y + h, x : x + w]
-                if region.size == 0:
-                    ocr_results.append(
-                        OCRResult(text="", confidence=0.0, language=src, engine_used="none")
-                    )
-                    continue
-                result = self.ocr.extract_text(region, language_hint=src)
-                ocr_results.append(result)
-                logger.debug("OCR [%d]: '%s' (%.2f)", bubble.id, result.text[:50], result.confidence)
-        except Exception as e:
-            logger.error("OCR failed: %s", e, exc_info=True)
-            errors.append(f"OCR failed: {e}")
+        with self._perf.track("ocr") if self._perf else nullcontext():
+            try:
+                for bubble in bubbles:
+                    x, y, w, h = bubble.bbox
+                    region = image[y : y + h, x : x + w]
+                    if region.size == 0:
+                        ocr_results.append(
+                            OCRResult(text="", confidence=0.0, language=src, engine_used="none")
+                        )
+                        continue
+                    result = self.ocr.extract_text(region, language_hint=src)
+                    ocr_results.append(result)
+                    logger.debug("OCR [%d]: '%s' (%.2f)", bubble.id, result.text[:50], result.confidence)
+            except Exception as e:
+                logger.error("OCR failed: %s", e, exc_info=True)
+                errors.append(f"OCR failed: {e}")
         tracker.complete_step(1)
 
         # Filter bubbles with no detected text
@@ -208,56 +226,108 @@ class MangaTranslationPipeline:
         # --- Step 3: Translation ---
         tracker.start_step(2)
         translations: List[TranslationResult] = []
-        try:
-            texts = [o.text for o in valid_ocr]
-            translations = self.translator.translate_batch(texts, src, tgt)
-        except Exception as e:
-            logger.error("Translation failed: %s", e, exc_info=True)
-            errors.append(f"Translation failed: {e}")
-            translations = [
-                TranslationResult(
-                    source_text=o.text,
-                    translated_text="",
-                    source_language=src,
-                    target_language=tgt,
-                    engine_used="none",
-                    confidence=0.0,
-                    error=str(e),
-                )
-                for o in valid_ocr
-            ]
+        with self._perf.track("translation") if self._perf else nullcontext():
+            try:
+                texts = [o.text for o in valid_ocr]
+
+                # Check TM for cached translations
+                tm_hits: dict = {}  # index -> target_text
+                texts_to_translate: List[str] = []
+                indices_to_translate: List[int] = []
+                if self._tm:
+                    for idx, text in enumerate(texts):
+                        match = self._tm.lookup_exact(text, src, tgt)
+                        if match:
+                            tm_hits[idx] = match.target_text
+                            logger.debug("TM hit for: '%s'", text[:50])
+                        else:
+                            texts_to_translate.append(text)
+                            indices_to_translate.append(idx)
+                else:
+                    texts_to_translate = texts
+                    indices_to_translate = list(range(len(texts)))
+
+                # Translate texts not found in TM
+                if texts_to_translate:
+                    batch_results = self.translator.translate_batch(
+                        texts_to_translate, src, tgt
+                    )
+                else:
+                    batch_results = []
+
+                # Merge TM hits and fresh translations
+                fresh_iter = iter(batch_results)
+                for idx in range(len(texts)):
+                    if idx in tm_hits:
+                        translations.append(TranslationResult(
+                            source_text=texts[idx],
+                            translated_text=tm_hits[idx],
+                            source_language=src,
+                            target_language=tgt,
+                            engine_used="translation_memory",
+                            confidence=1.0,
+                        ))
+                    else:
+                        tr = next(fresh_iter)
+                        translations.append(tr)
+                        # Store new translation in TM
+                        if self._tm and tr.translated_text and tr.confidence > 0.3:
+                            self._tm.add_entry(
+                                source_text=tr.source_text,
+                                target_text=tr.translated_text,
+                                source_lang=src,
+                                target_lang=tgt,
+                                quality_score=tr.confidence,
+                            )
+
+            except Exception as e:
+                logger.error("Translation failed: %s", e, exc_info=True)
+                errors.append(f"Translation failed: {e}")
+                translations = [
+                    TranslationResult(
+                        source_text=o.text,
+                        translated_text="",
+                        source_language=src,
+                        target_language=tgt,
+                        engine_used="none",
+                        confidence=0.0,
+                        error=str(e),
+                    )
+                    for o in valid_ocr
+                ]
         tracker.complete_step(2)
 
         # --- Step 4: Inpainting (text removal) ---
         tracker.start_step(3)
         cleaned = image.copy()
         inpaint_results: List[Optional[InpaintResult]] = []
-        try:
-            for bubble in valid_bubbles:
-                x, y, w, h = bubble.bbox
-                region = cleaned[y : y + h, x : x + w]
-                if region.size == 0:
-                    inpaint_results.append(None)
-                    continue
+        with self._perf.track("inpainting") if self._perf else nullcontext():
+            try:
+                for bubble in valid_bubbles:
+                    x, y, w, h = bubble.bbox
+                    region = cleaned[y : y + h, x : x + w]
+                    if region.size == 0:
+                        inpaint_results.append(None)
+                        continue
 
-                # Create text mask for this bubble
-                bubble_mask = bubble.mask
-                if bubble_mask is not None:
-                    # Crop mask to bbox
-                    local_mask = bubble_mask[y : y + h, x : x + w]
-                else:
-                    local_mask = np.ones((h, w), dtype=np.uint8) * 255
+                    # Create text mask for this bubble
+                    bubble_mask = bubble.mask
+                    if bubble_mask is not None:
+                        # Crop mask to bbox
+                        local_mask = bubble_mask[y : y + h, x : x + w]
+                    else:
+                        local_mask = np.ones((h, w), dtype=np.uint8) * 255
 
-                text_mask = self.inpainter.create_text_mask(region, local_mask)
-                result = self.inpainter.remove_text_with_fallback(
-                    region, text_mask,
-                    quality_threshold=self._quality_threshold,
-                )
-                cleaned[y : y + h, x : x + w] = result.image
-                inpaint_results.append(result)
-        except Exception as e:
-            logger.error("Inpainting failed: %s", e, exc_info=True)
-            errors.append(f"Inpainting failed: {e}")
+                    text_mask = self.inpainter.create_text_mask(region, local_mask)
+                    result = self.inpainter.remove_text_with_fallback(
+                        region, text_mask,
+                        quality_threshold=self._quality_threshold,
+                    )
+                    cleaned[y : y + h, x : x + w] = result.image
+                    inpaint_results.append(result)
+            except Exception as e:
+                logger.error("Inpainting failed: %s", e, exc_info=True)
+                errors.append(f"Inpainting failed: {e}")
         tracker.complete_step(3)
 
         layer_stack.add_layer("Cleaned", cleaned.copy())
@@ -266,46 +336,64 @@ class MangaTranslationPipeline:
         tracker.start_step(4)
         final = cleaned.copy()
         typeset_results: List[Optional[TypesetResult]] = []
-        try:
-            for bubble, translation in zip(valid_bubbles, translations):
-                if not translation.translated_text:
-                    typeset_results.append(None)
-                    continue
+        with self._perf.track("typesetting") if self._perf else nullcontext():
+            try:
+                for bubble, translation in zip(valid_bubbles, translations):
+                    if not translation.translated_text:
+                        typeset_results.append(None)
+                        continue
 
-                result = self.typesetter.typeset_text(
-                    final,
-                    translation.translated_text,
-                    bubble.bbox,
-                    bubble_mask=bubble.mask,
-                    orientation=self.settings.typesetting.orientation,
-                    source_lang=src,
-                )
-                final = result.image
-                typeset_results.append(result)
-        except Exception as e:
-            logger.error("Typesetting failed: %s", e, exc_info=True)
-            errors.append(f"Typesetting failed: {e}")
+                    result = self.typesetter.typeset_text(
+                        final,
+                        translation.translated_text,
+                        bubble.bbox,
+                        bubble_mask=bubble.mask,
+                        orientation=self.settings.typesetting.orientation,
+                        source_lang=src,
+                    )
+                    final = result.image
+                    typeset_results.append(result)
+            except Exception as e:
+                logger.error("Typesetting failed: %s", e, exc_info=True)
+                errors.append(f"Typesetting failed: {e}")
         tracker.complete_step(4)
+
+        # --- Quality Control (optional) ---
+        qc_report = None
+        if self._qc:
+            with self._perf.track("quality_control") if self._perf else nullcontext():
+                pairs = [
+                    {"source": bt_ocr.text, "target": translations[i].translated_text}
+                    for i, bt_ocr in enumerate(valid_ocr)
+                    if i < len(translations)
+                ]
+                qc_report = self._qc.check_page(pairs, target_lang=tgt, page_num=1)
 
         # --- Step 6: Assemble result ---
         tracker.start_step(5)
-        layer_stack.add_layer("Translated", final.copy())
+        with self._perf.track("assembly") if self._perf else nullcontext():
+            layer_stack.add_layer("Translated", final.copy())
 
-        bubble_translations = []
-        for i, (bubble, ocr) in enumerate(zip(valid_bubbles, valid_ocr)):
-            bt = BubbleTranslation(
-                bubble=bubble,
-                ocr_result=ocr,
-                translation=translations[i] if i < len(translations) else TranslationResult(
-                    source_text=ocr.text, translated_text="", source_language=src,
-                    target_language=tgt, engine_used="none", confidence=0.0,
-                ),
-                inpaint_result=inpaint_results[i] if i < len(inpaint_results) else None,
-                typeset_result=typeset_results[i] if i < len(typeset_results) else None,
-            )
-            bubble_translations.append(bt)
+            bubble_translations = []
+            for i, (bubble, ocr) in enumerate(zip(valid_bubbles, valid_ocr)):
+                bt = BubbleTranslation(
+                    bubble=bubble,
+                    ocr_result=ocr,
+                    translation=translations[i] if i < len(translations) else TranslationResult(
+                        source_text=ocr.text, translated_text="", source_language=src,
+                        target_language=tgt, engine_used="none", confidence=0.0,
+                    ),
+                    inpaint_result=inpaint_results[i] if i < len(inpaint_results) else None,
+                    typeset_result=typeset_results[i] if i < len(typeset_results) else None,
+                )
+                bubble_translations.append(bt)
 
         tracker.complete_step(5)
+
+        # Build performance summary
+        perf_summary = ""
+        if self._perf:
+            perf_summary = self._perf.report().summary()
 
         result = PageTranslationResult(
             original_image=image,
@@ -314,6 +402,8 @@ class MangaTranslationPipeline:
             bubbles=bubble_translations,
             layer_stack=layer_stack,
             errors=errors,
+            qc_report=qc_report,
+            perf_summary=perf_summary,
         )
 
         logger.info(
@@ -332,6 +422,9 @@ def translate_file(
     source_lang: str = "ja",
     target_lang: str = "en",
     settings: Optional[PluginSettings] = None,
+    tm_db_path: Optional[str] = None,
+    enable_qc: bool = False,
+    enable_perf: bool = False,
 ) -> PageTranslationResult:
     """Convenience function: translate a manga image file.
 
@@ -341,6 +434,9 @@ def translate_file(
         source_lang: Source language code.
         target_lang: Target language code.
         settings: Plugin settings. If None, loads from config.
+        tm_db_path: Path to translation memory database. If set, enables TM.
+        enable_qc: Enable quality control checks.
+        enable_perf: Enable performance monitoring.
 
     Returns:
         PageTranslationResult
@@ -355,7 +451,20 @@ def translate_file(
     settings.translation.source_language = source_lang
     settings.translation.target_language = target_lang
 
-    pipeline = MangaTranslationPipeline(settings)
+    # Create optional Phase 2-3 objects
+    perf_monitor = PerfMonitor() if enable_perf else None
+    quality_checker = QualityChecker() if enable_qc else None
+    translation_memory = TranslationMemory(db_path=tm_db_path) if tm_db_path else None
+
+    if perf_monitor:
+        perf_monitor.start()
+
+    pipeline = MangaTranslationPipeline(
+        settings,
+        perf_monitor=perf_monitor,
+        quality_checker=quality_checker,
+        translation_memory=translation_memory,
+    )
 
     def console_progress(step, total, message):
         print(f"  [{step}/{total}] {message}")
