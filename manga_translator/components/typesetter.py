@@ -88,6 +88,10 @@ class Typesetter:
         Fraction of the bubble dimensions reserved as inner padding.
     """
 
+    # Absolute minimum font size — used when min_font_size is too large for
+    # the bubble.  Going below 6 px produces illegible text.
+    _ABSOLUTE_MIN_FONT_SIZE = 6
+
     # Common font file extensions recognised during font search.
     _FONT_EXTENSIONS = {".ttf", ".otf", ".ttc", ".woff", ".woff2"}
 
@@ -206,7 +210,8 @@ class Typesetter:
             mask = np.zeros(image.shape[:2], dtype=np.uint8)
             return TypesetResult(image=image.copy(), text_mask=mask, layout=empty_layout)
 
-        bx, by, bw, bh = bbox
+        # 0. Shrink bbox to fit inside the actual bubble shape.
+        bx, by, bw, bh = self._compute_effective_bbox(bbox, bubble_mask)
 
         # 1. Compute available space inside the bubble (with padding).
         pad_x = int(bw * self.padding_ratio)
@@ -423,6 +428,22 @@ class Typesetter:
                 lo = mid + 1
             else:
                 hi = mid - 1
+
+        # Verify best actually fits.  If min_font_size was too large for the
+        # bubble, try progressively smaller sizes down to the absolute minimum.
+        font = self._load_font(font_path, best)
+        lines = self.wrap_text(text, font, available_width)
+        line_height = int(best * self.line_spacing)
+        total_height = line_height * len(lines)
+        if total_height > available_height and best > self._ABSOLUTE_MIN_FONT_SIZE:
+            for size in range(best - 1, self._ABSOLUTE_MIN_FONT_SIZE - 1, -1):
+                font = self._load_font(font_path, size)
+                lines = self.wrap_text(text, font, available_width)
+                lh = int(size * self.line_spacing)
+                th = lh * len(lines)
+                if th <= available_height:
+                    return size
+            return self._ABSOLUTE_MIN_FONT_SIZE
 
         return best
 
@@ -727,7 +748,9 @@ class Typesetter:
             mask = np.zeros(image.shape[:2], dtype=np.uint8)
             return TypesetResult(image=image.copy(), text_mask=mask, layout=empty_layout)
 
-        bx, by, bw, bh = bbox
+        # Shrink bbox to fit inside the actual bubble shape.
+        bx, by, bw, bh = self._compute_effective_bbox(bbox, bubble_mask)
+
         pad_x = int(bw * self.padding_ratio)
         pad_y = int(bh * self.padding_ratio)
         available_width = max(bw - 2 * pad_x, 1)
@@ -923,6 +946,101 @@ class Typesetter:
     # Private helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _largest_inscribed_rect(
+        mask_crop: np.ndarray,
+    ) -> Tuple[int, int, int, int]:
+        """Find the largest axis-aligned rectangle inside a binary mask.
+
+        Uses the histogram-based maximal-rectangle algorithm (O(rows*cols)).
+
+        Parameters
+        ----------
+        mask_crop : np.ndarray
+            Binary uint8 mask where 255 means "inside bubble".
+
+        Returns
+        -------
+        (x, y, w, h) in *local* (mask_crop) coordinates.
+        """
+        if mask_crop.size == 0:
+            return (0, 0, mask_crop.shape[1] if mask_crop.ndim >= 2 else 0,
+                    mask_crop.shape[0] if mask_crop.ndim >= 1 else 0)
+
+        rows, cols = mask_crop.shape[:2]
+        # Build a height histogram: height[r][c] = number of consecutive
+        # "inside" rows ending at row r in column c.
+        binary = (mask_crop > 0).astype(np.int32)
+        height = np.zeros((rows, cols), dtype=np.int32)
+        height[0] = binary[0]
+        for r in range(1, rows):
+            height[r] = np.where(binary[r] == 1, height[r - 1] + 1, 0)
+
+        best_area = 0
+        best_rect = (0, 0, cols, rows)  # fallback
+
+        for r in range(rows):
+            # Largest rectangle in histogram for this row.
+            h_row = height[r]
+            stack: list[int] = []  # stack of column indices
+            left = [0] * cols
+
+            # Left boundary
+            for c in range(cols):
+                while stack and h_row[stack[-1]] >= h_row[c]:
+                    stack.pop()
+                left[c] = stack[-1] + 1 if stack else 0
+                stack.append(c)
+
+            # Right boundary
+            stack = []
+            right = [0] * cols
+            for c in range(cols - 1, -1, -1):
+                while stack and h_row[stack[-1]] >= h_row[c]:
+                    stack.pop()
+                right[c] = stack[-1] - 1 if stack else cols - 1
+                stack.append(c)
+
+            for c in range(cols):
+                w = right[c] - left[c] + 1
+                h = int(h_row[c])
+                area = w * h
+                if area > best_area:
+                    best_area = area
+                    best_rect = (left[c], r - h + 1, w, h)
+
+        return best_rect
+
+    def _compute_effective_bbox(
+        self,
+        bbox: Tuple[int, int, int, int],
+        bubble_mask: Optional[np.ndarray],
+    ) -> Tuple[int, int, int, int]:
+        """Shrink *bbox* to the largest rectangle fitting inside *bubble_mask*.
+
+        If *bubble_mask* is ``None``, returns the original *bbox* unchanged.
+        """
+        if bubble_mask is None:
+            return bbox
+
+        bx, by, bw, bh = bbox
+        img_h, img_w = bubble_mask.shape[:2]
+
+        # Clamp bbox to image bounds.
+        x1 = max(bx, 0)
+        y1 = max(by, 0)
+        x2 = min(bx + bw, img_w)
+        y2 = min(by + bh, img_h)
+        if x2 <= x1 or y2 <= y1:
+            return bbox
+
+        crop = bubble_mask[y1:y2, x1:x2]
+        if crop.size == 0 or not np.any(crop):
+            return bbox
+
+        lx, ly, lw, lh = self._largest_inscribed_rect(crop)
+        return (x1 + lx, y1 + ly, lw, lh)
+
     def _load_font(
         self, font_path: Optional[str], size: int
     ) -> ImageFont.FreeTypeFont:
@@ -955,19 +1073,48 @@ class Typesetter:
         max_width: int,
         output_lines: List[str],
     ) -> str:
-        """Break a single *word* that exceeds *max_width* character-by-character.
+        """Break a single *word* that exceeds *max_width*.
+
+        For Latin text, inserts hyphens at break points (e.g. "Speak-" / "ing")
+        instead of splitting mid-character.  CJK text is still split per
+        character.
 
         Completed sub-lines are appended to *output_lines*.  Returns the
         remaining partial line that has not yet been flushed.
         """
-        current = ""
-        for ch in word:
-            test = current + ch
-            bbox = font.getbbox(test)
-            tw = bbox[2] - bbox[0]
-            if tw > max_width and current:
-                output_lines.append(current)
-                current = ch
-            else:
-                current = test
-        return current
+        # Determine whether this word is Latin (use hyphenation) or CJK.
+        is_latin = not any(_is_cjk_char(ch) for ch in word)
+
+        if is_latin:
+            # Measure the width of a hyphen so we can reserve space.
+            hyphen_w = font.getbbox("-")[2] - font.getbbox("-")[0]
+
+            current = ""
+            for ch in word:
+                test = current + ch
+                test_bbox = font.getbbox(test)
+                tw = test_bbox[2] - test_bbox[0]
+                # Check if adding this char (plus a hyphen) exceeds max_width.
+                if tw + hyphen_w > max_width and len(current) > 1:
+                    output_lines.append(current + "-")
+                    current = ch
+                elif tw > max_width and current:
+                    # Fallback: even without hyphen space it doesn't fit.
+                    output_lines.append(current)
+                    current = ch
+                else:
+                    current = test
+            return current
+        else:
+            # CJK: break per character (no hyphen needed).
+            current = ""
+            for ch in word:
+                test = current + ch
+                test_bbox = font.getbbox(test)
+                tw = test_bbox[2] - test_bbox[0]
+                if tw > max_width and current:
+                    output_lines.append(current)
+                    current = ch
+                else:
+                    current = test
+            return current

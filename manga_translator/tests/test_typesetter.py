@@ -313,3 +313,130 @@ class TestFontCategories:
     def test_font_category_init(self):
         ts = Typesetter(font_category="sfx")
         assert ts.font_category == "sfx"
+
+
+class TestInscribedRectangle:
+    """Tests for _largest_inscribed_rect static method."""
+
+    def test_full_rectangle_mask(self):
+        """A fully filled mask should return the full dimensions."""
+        mask = np.full((100, 200), 255, dtype=np.uint8)
+        x, y, w, h = Typesetter._largest_inscribed_rect(mask)
+        assert w == 200
+        assert h == 100
+
+    def test_oval_mask_smaller_rect(self):
+        """An ellipse mask should yield a rect smaller than the full bbox."""
+        import cv2
+        mask = np.zeros((200, 300), dtype=np.uint8)
+        cv2.ellipse(mask, (150, 100), (140, 90), 0, 0, 360, 255, -1)
+        x, y, w, h = Typesetter._largest_inscribed_rect(mask)
+        # Inscribed rect must be strictly smaller than the full ellipse bbox.
+        assert w < 300
+        assert h < 200
+        # But it should still be a reasonable size (at least half).
+        assert w > 100
+        assert h > 50
+
+    def test_empty_mask_fallback(self):
+        """An all-zero mask should fall back to full bbox dimensions."""
+        mask = np.zeros((80, 120), dtype=np.uint8)
+        x, y, w, h = Typesetter._largest_inscribed_rect(mask)
+        # With no "inside" pixels, the best_area stays 0 and we get the
+        # fallback (0, 0, cols, rows).
+        assert w == 120
+        assert h == 80
+
+
+class TestEffectiveBbox:
+    """Tests for _compute_effective_bbox."""
+
+    def test_no_mask_returns_original(self):
+        ts = Typesetter()
+        bbox = (10, 20, 100, 80)
+        assert ts._compute_effective_bbox(bbox, None) == bbox
+
+    def test_oval_mask_shrinks_bbox(self):
+        import cv2
+        ts = Typesetter()
+        mask = np.zeros((300, 400), dtype=np.uint8)
+        # Draw an ellipse centred in the bbox region.
+        cv2.ellipse(mask, (200, 150), (140, 100), 0, 0, 360, 255, -1)
+        bbox = (50, 50, 300, 200)
+        ex, ey, ew, eh = ts._compute_effective_bbox(bbox, mask)
+        # Effective box should be no larger than original.
+        assert ew <= 300
+        assert eh <= 200
+        # And it should fit inside the original.
+        assert ex >= 50
+        assert ey >= 50
+
+    def test_full_mask_preserves_bbox(self):
+        ts = Typesetter()
+        mask = np.full((200, 300), 255, dtype=np.uint8)
+        bbox = (0, 0, 300, 200)
+        result = ts._compute_effective_bbox(bbox, mask)
+        assert result == bbox
+
+    def test_typeset_with_oval_mask(self):
+        """End-to-end: typeset_text with an oval bubble_mask."""
+        import cv2
+        ts = Typesetter()
+        image = np.full((300, 400, 3), 255, dtype=np.uint8)
+        mask = np.zeros((300, 400), dtype=np.uint8)
+        cv2.ellipse(mask, (200, 150), (150, 120), 0, 0, 360, 255, -1)
+        bbox = (50, 30, 300, 240)
+        result = ts.typeset_text(image, "Hello world test", bbox, bubble_mask=mask)
+        assert isinstance(result, TypesetResult)
+
+
+class TestHyphenatedBreaking:
+    """Tests for hyphenated word breaking in _break_word."""
+
+    def test_latin_word_gets_hyphen(self):
+        """A long Latin word forced to break should produce a hyphen."""
+        from PIL import ImageFont
+        font = ImageFont.load_default()
+        output: list[str] = []
+        # "Supercalifragilistic" is long enough to force a break at ~30px width
+        remainder = Typesetter._break_word(
+            "Supercalifragilistic", font, 30, output,
+        )
+        assert len(output) >= 1
+        # At least one flushed line should end with a hyphen.
+        assert any(line.endswith("-") for line in output)
+        assert len(remainder) > 0
+
+    def test_cjk_word_no_hyphen(self):
+        """CJK characters should still break per-character, no hyphens."""
+        from PIL import ImageFont
+        font = ImageFont.load_default()
+        output: list[str] = []
+        Typesetter._break_word("漫画翻訳テスト", font, 20, output)
+        # No line should end with a hyphen.
+        for line in output:
+            assert not line.endswith("-")
+
+    def test_short_latin_no_break(self):
+        """A short Latin word that fits should not be broken at all."""
+        from PIL import ImageFont
+        font = ImageFont.load_default()
+        output: list[str] = []
+        remainder = Typesetter._break_word("Hi", font, 200, output)
+        assert output == []
+        assert remainder == "Hi"
+
+
+class TestDynamicFontFloor:
+    """Tests for dynamic font size floor below min_font_size."""
+
+    def test_tiny_bubble_uses_smaller_font(self):
+        """For a very small bubble, font should go below default min_font_size."""
+        ts = Typesetter(min_font_size=14)
+        # Tiny available space — 14px font won't fit multi-word text.
+        size = ts.calculate_optimal_font_size(
+            "Hello world testing", 40, 30, None,
+        )
+        # Should have gone below 14 (the configured min) but not below 6.
+        assert size >= Typesetter._ABSOLUTE_MIN_FONT_SIZE
+        assert size <= 14
