@@ -401,6 +401,17 @@ class TranslationManager:
                 confidence=0.0,
             )
 
+        # Same-language passthrough
+        if source_lang == target_lang:
+            return TranslationResult(
+                source_text=text,
+                translated_text=text,
+                source_language=source_lang,
+                target_language=target_lang,
+                engine_used="passthrough",
+                confidence=1.0,
+            )
+
         engines = self._get_engine_order()
         if not engines:
             return TranslationResult(

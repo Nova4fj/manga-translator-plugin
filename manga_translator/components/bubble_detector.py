@@ -64,6 +64,11 @@ class BubbleDetector:
             # Bounding box
             x, y, w, h = cv2.boundingRect(contour)
 
+            # Reject contours that span nearly the entire image (borders)
+            img_h, img_w = image.shape[:2]
+            if w > img_w * 0.95 and h > img_h * 0.95:
+                continue
+
             # Aspect-ratio filter
             aspect_ratio = w / h if h > 0 else 0.0
             if aspect_ratio < self.min_aspect_ratio or aspect_ratio > self.max_aspect_ratio:
@@ -180,11 +185,24 @@ class BubbleDetector:
         """Find external contours in the preprocessed binary image and return
         those whose area falls within ``[min_area, max_area]``.
 
+        The preprocessing produces white (255) for bubble interiors. We find
+        contours of these white regions directly. If the white regions cover
+        most of the image (>80%), the polarity is inverted first so that
+        contour detection targets the bubble interiors correctly.
+
         An approximation step (``approxPolyDP``) simplifies the contours to
         reduce noise while keeping the overall shape.
         """
+        # If white pixels dominate, bubbles are white regions — invert so
+        # findContours picks up the bubble boundaries as external contours.
+        white_ratio = np.mean(preprocessed > 0)
+        if white_ratio > 0.80:
+            binary = cv2.bitwise_not(preprocessed)
+        else:
+            binary = preprocessed
+
         contours, _ = cv2.findContours(
-            preprocessed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
 
         filtered: List[np.ndarray] = []
