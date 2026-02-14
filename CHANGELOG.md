@@ -2,6 +2,15 @@
 
 All notable changes to Manga Translator Plugin.
 
+## [0.4.0] - 2026-02-14
+
+### Added
+- Bubble shape classifier: classifies bubbles as speech, thought, shout, narration, or caption using contour analysis
+- SFX/onomatopoeia detector: finds sound effects drawn outside speech bubbles
+- Font matcher: intelligent font selection based on bubble type (speech→comic, shout→gothic, etc.)
+- Panel-aware reading order optimizer: clusters bubbles into panels, sorts in RTL (manga) or LTR (manhwa) order
+- 44 new tests (521 total)
+
 ## [0.3.0] - 2026-02-14
 
 ### Added
