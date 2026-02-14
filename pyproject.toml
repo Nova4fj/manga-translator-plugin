@@ -49,6 +49,9 @@ Repository = "https://github.com/manga-translator/manga-translator-plugin"
 [project.scripts]
 manga-translator = "manga_translator.__main__:main"
 
+[tool.setuptools.package-data]
+manga_translator = ["py.typed"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py38"
