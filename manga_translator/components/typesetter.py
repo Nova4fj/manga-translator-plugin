@@ -268,8 +268,9 @@ class Typesetter:
         )
 
         # 7. Render the text onto the image.
+        effective_bbox = (bx, by, bw, bh)
         result_image, text_mask = self.render_text_to_image(
-            image, layout, bbox, font,
+            image, layout, effective_bbox, font,
         )
 
         return TypesetResult(image=result_image, text_mask=text_mask, layout=layout)

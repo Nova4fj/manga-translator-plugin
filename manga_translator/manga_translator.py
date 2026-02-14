@@ -436,6 +436,7 @@ class MangaTranslationPipeline:
                         result = self.inpainter.remove_text_with_fallback(
                             region, text_mask,
                             quality_threshold=self._quality_threshold,
+                            constraint_mask=local_mask,
                         )
                         cleaned[y : y + h, x : x + w] = result.image
                         inpaint_results.append(result)

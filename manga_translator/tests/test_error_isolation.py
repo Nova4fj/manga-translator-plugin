@@ -142,7 +142,7 @@ class TestSingleBubbleInpaintFailure:
 
         # Inpainting: fail on 2nd call (bubble index 1)
         inpaint_call_count = [0]
-        def mock_remove_text(region, mask, quality_threshold=0.5):
+        def mock_remove_text(region, mask, quality_threshold=0.5, constraint_mask=None):
             idx = inpaint_call_count[0]
             inpaint_call_count[0] += 1
             if idx == 1:

@@ -139,6 +139,7 @@ class Inpainter:
         image: np.ndarray,
         text_mask: np.ndarray,
         quality_threshold: float = 0.5,
+        constraint_mask: Optional[np.ndarray] = None,
     ) -> InpaintResult:
         """Remove text with automatic quality-based fallback.
 
@@ -149,7 +150,7 @@ class Inpainter:
 
         Returns the best result by quality score.
         """
-        primary = self.remove_text(image, text_mask)
+        primary = self.remove_text(image, text_mask, constraint_mask=constraint_mask)
 
         if primary.quality_score >= quality_threshold:
             return primary
@@ -181,6 +182,12 @@ class Inpainter:
         )
         dilated_mask = cv2.dilate(mask, kernel, iterations=1)
 
+        # Clip dilated mask to bubble contour to prevent bleed
+        if constraint_mask is not None:
+            dilated_mask = cv2.bitwise_and(
+                dilated_mask, self._ensure_mask(constraint_mask)
+            )
+
         if fallback_method == "lama":
             fallback_img = self.inpaint_lama(image, dilated_mask)
         elif fallback_method == "opencv_ns":
@@ -205,7 +212,10 @@ class Inpainter:
         return primary
 
     def remove_text(
-        self, image: np.ndarray, text_mask: np.ndarray
+        self,
+        image: np.ndarray,
+        text_mask: np.ndarray,
+        constraint_mask: Optional[np.ndarray] = None,
     ) -> InpaintResult:
         """Remove text from *image* using the configured method.
 
@@ -215,6 +225,10 @@ class Inpainter:
             BGR or grayscale source image.
         text_mask : np.ndarray
             Single-channel uint8 mask where 255 marks text pixels to remove.
+        constraint_mask : np.ndarray, optional
+            Binary mask constraining the inpainting region.  After dilation,
+            the mask is clipped to this boundary so that inpainting does not
+            bleed outside the bubble contour.
 
         Returns
         -------
@@ -234,6 +248,12 @@ class Inpainter:
             (self.mask_dilation * 2 + 1, self.mask_dilation * 2 + 1),
         )
         dilated_mask = cv2.dilate(mask, kernel, iterations=1)
+
+        # Clip dilated mask to bubble contour to prevent bleed
+        if constraint_mask is not None:
+            dilated_mask = cv2.bitwise_and(
+                dilated_mask, self._ensure_mask(constraint_mask)
+            )
 
         # Select method --------------------------------------------------
         chosen_method = self.method
