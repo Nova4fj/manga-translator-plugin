@@ -158,6 +158,7 @@ class Typesetter:
         bubble_mask: Optional[np.ndarray] = None,
         orientation: str = "auto",
         source_lang: str = "",
+        target_lang: str = "",
         font_override: Optional[str] = None,
     ) -> TypesetResult:
         """Render translated *text* into a bubble region on *image*.
@@ -178,6 +179,9 @@ class Typesetter:
             the typesetter detects orientation from bubble shape and text content.
         source_lang : str
             Source language code for orientation detection (e.g. ``"ja"``).
+        target_lang : str
+            Target language code (e.g. ``"en"``).  When set to a non-CJK
+            language, orientation is forced to horizontal.
 
         Returns
         -------
@@ -185,7 +189,7 @@ class Typesetter:
         """
         # Detect or force orientation
         if orientation == "auto":
-            detected = self.detect_orientation(text.strip(), bbox, source_lang)
+            detected = self.detect_orientation(text.strip(), bbox, source_lang, target_lang)
         else:
             detected = orientation
 
@@ -657,6 +661,7 @@ class Typesetter:
         text: str,
         bbox: Tuple[int, int, int, int],
         source_lang: str = "",
+        target_lang: str = "",
     ) -> str:
         """Detect whether text should be rendered vertically or horizontally.
 
@@ -666,14 +671,23 @@ class Typesetter:
             text: The text to render.
             bbox: (x, y, w, h) bounding box of the bubble.
             source_lang: Source language code (e.g. "ja", "zh", "ko").
+            target_lang: Target language code (e.g. "en").  Non-CJK target
+                languages always get horizontal orientation.
 
         Returns:
             "vertical" or "horizontal".
         """
+        _CJK_LANGS = {"ja", "zh", "ko", "zh-cn", "zh-tw"}
+
+        # If the target language is known and non-CJK, the rendered text is
+        # a non-CJK script → always horizontal.
+        if target_lang and target_lang not in _CJK_LANGS:
+            return "horizontal"
+
         _, _, w, h = bbox
 
         # CJK languages in tall/narrow bubbles → vertical
-        is_cjk_lang = source_lang in ("ja", "zh", "ko", "zh-cn", "zh-tw")
+        is_cjk_lang = source_lang in _CJK_LANGS
 
         # Count CJK characters in text
         cjk_count = sum(1 for ch in text if _is_cjk_char(ch))

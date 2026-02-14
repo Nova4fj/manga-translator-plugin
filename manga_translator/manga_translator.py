@@ -480,6 +480,7 @@ class MangaTranslationPipeline:
                             bubble_mask=bubble.mask,
                             orientation=self.settings.typesetting.orientation,
                             source_lang=src,
+                            target_lang=tgt,
                             font_override=font_override,
                         )
                         final = result.image

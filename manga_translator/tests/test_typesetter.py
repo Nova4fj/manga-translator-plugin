@@ -119,6 +119,21 @@ class TestOrientationDetection:
         result = Typesetter.detect_orientation("漫画ABC", (0, 0, 40, 200), "")
         assert result == "vertical"
 
+    def test_ja_source_en_target_tall_bubble(self):
+        """ja→en in tall bubble → horizontal (English text should never be vertical)."""
+        result = Typesetter.detect_orientation("Hello world", (0, 0, 50, 200), "ja", "en")
+        assert result == "horizontal"
+
+    def test_ja_source_zh_target_tall_bubble(self):
+        """ja→zh in tall bubble → vertical (CJK→CJK keeps vertical)."""
+        result = Typesetter.detect_orientation("你好世界", (0, 0, 50, 200), "ja", "zh")
+        assert result == "vertical"
+
+    def test_ja_source_no_target_tall_bubble(self):
+        """ja source, no target, tall bubble → vertical (backward compat)."""
+        result = Typesetter.detect_orientation("こんにちは", (0, 0, 50, 200), "ja")
+        assert result == "vertical"
+
 
 class TestVerticalTypesetting:
     def test_vertical_simple(self):
