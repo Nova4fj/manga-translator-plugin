@@ -2,11 +2,51 @@
 
 import logging
 import os
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import List, Optional, Dict
 
 logger = logging.getLogger(__name__)
+
+
+def retry_with_backoff(
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+    backoff_factor: float = 2.0,
+    retryable_exceptions: tuple = (Exception,),
+):
+    """Decorator that retries a function with exponential backoff.
+
+    Handles rate limits (HTTP 429), network timeouts, and transient failures.
+    """
+
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except retryable_exceptions as e:
+                    last_exception = e
+                    if attempt == max_retries:
+                        break
+                    # Check for rate limit hint in the exception
+                    delay = min(base_delay * (backoff_factor ** attempt), max_delay)
+                    error_str = str(e).lower()
+                    if "429" in error_str or "rate" in error_str:
+                        delay = min(delay * 2, max_delay)
+                    logger.warning(
+                        "Attempt %d/%d for %s failed: %s. Retrying in %.1fs",
+                        attempt + 1, max_retries + 1, func.__name__, e, delay,
+                    )
+                    time.sleep(delay)
+            raise last_exception
+
+        return wrapper
+
+    return decorator
 
 
 @dataclass
@@ -78,18 +118,26 @@ class OpenAIEngine(BaseTranslationEngine):
             self._client = openai.OpenAI(api_key=self._api_key)
         return self._client
 
+    @retry_with_backoff(max_retries=3, base_delay=1.0, max_delay=30.0)
+    def _api_call(self, messages, max_tokens=1000):
+        """Make an API call with retry logic."""
+        client = self._get_client()
+        return client.chat.completions.create(
+            model=self._model,
+            messages=messages,
+            temperature=0.3,
+            max_tokens=max_tokens,
+        )
+
     def translate(
         self, text: str, source_lang: str = "ja", target_lang: str = "en"
     ) -> TranslationResult:
         try:
-            client = self._get_client()
-            response = client.chat.completions.create(
-                model=self._model,
+            response = self._api_call(
                 messages=[
                     {"role": "system", "content": self._context_prompt},
                     {"role": "user", "content": text},
                 ],
-                temperature=0.3,
                 max_tokens=1000,
             )
             translated = response.choices[0].message.content.strip()
@@ -121,20 +169,17 @@ class OpenAIEngine(BaseTranslationEngine):
             return [self.translate(t, source_lang, target_lang) for t in texts]
 
         try:
-            client = self._get_client()
             numbered = "\n".join(f"[{i+1}] {t}" for i, t in enumerate(texts))
             batch_prompt = (
                 f"Translate each numbered line from {source_lang} to {target_lang}. "
                 f"Return each translation on its own line with the same numbering.\n\n"
                 f"{numbered}"
             )
-            response = client.chat.completions.create(
-                model=self._model,
+            response = self._api_call(
                 messages=[
                     {"role": "system", "content": self._context_prompt},
                     {"role": "user", "content": batch_prompt},
                 ],
-                temperature=0.3,
                 max_tokens=2000,
             )
             raw = response.choices[0].message.content.strip()
@@ -206,14 +251,19 @@ class DeepLEngine(BaseTranslationEngine):
             self._translator = deepl.Translator(self._api_key)
         return self._translator
 
+    @retry_with_backoff(max_retries=3, base_delay=1.0, max_delay=30.0)
+    def _api_call(self, texts, src, tgt):
+        """Make a DeepL API call with retry logic."""
+        translator = self._get_translator()
+        return translator.translate_text(texts, source_lang=src, target_lang=tgt)
+
     def translate(
         self, text: str, source_lang: str = "ja", target_lang: str = "en"
     ) -> TranslationResult:
         try:
-            translator = self._get_translator()
             src = self.LANG_MAP.get(source_lang, source_lang.upper())
             tgt = self.LANG_MAP.get(target_lang, target_lang.upper())
-            result = translator.translate_text(text, source_lang=src, target_lang=tgt)
+            result = self._api_call(text, src, tgt)
             return TranslationResult(
                 source_text=text,
                 translated_text=result.text,
@@ -238,10 +288,9 @@ class DeepLEngine(BaseTranslationEngine):
         self, texts: List[str], source_lang: str = "ja", target_lang: str = "en"
     ) -> List[TranslationResult]:
         try:
-            translator = self._get_translator()
             src = self.LANG_MAP.get(source_lang, source_lang.upper())
             tgt = self.LANG_MAP.get(target_lang, target_lang.upper())
-            results = translator.translate_text(texts, source_lang=src, target_lang=tgt)
+            results = self._api_call(texts, src, tgt)
 
             return [
                 TranslationResult(

@@ -31,3 +31,12 @@ target-version = "py38"
 
 [tool.pytest.ini_options]
 testpaths = ["manga_translator/tests"]
+
+[tool.coverage.run]
+source = ["manga_translator"]
+omit = [
+    "manga_translator/core/plugin_manager.py",
+    "manga_translator/ui/dialogs.py",
+    "manga_translator/__main__.py",
+    "manga_translator/tests/*",
+]
