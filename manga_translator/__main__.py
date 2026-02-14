@@ -244,6 +244,13 @@ def main():
     settings = sm.get_settings()
     if args.engine:
         settings.translation.primary_engine = args.engine
+    # Resolve API keys from environment variables
+    openai_key = sm.get_api_key("openai")
+    if openai_key:
+        settings.translation.openai_api_key = openai_key
+    deepl_key = sm.get_api_key("deepl")
+    if deepl_key:
+        settings.translation.deepl_api_key = deepl_key
 
     output = args.output
     if args.export_format:
@@ -318,6 +325,13 @@ def batch_translate(args):
     settings = sm.get_settings()
     if args.engine:
         settings.translation.primary_engine = args.engine
+    # Resolve API keys from environment variables
+    openai_key = sm.get_api_key("openai")
+    if openai_key:
+        settings.translation.openai_api_key = openai_key
+    deepl_key = sm.get_api_key("deepl")
+    if deepl_key:
+        settings.translation.deepl_api_key = deepl_key
 
     from manga_translator.input_validator import InputValidator, ValidationError
     try:
