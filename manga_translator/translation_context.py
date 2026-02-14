@@ -6,7 +6,10 @@ and page-level information to improve translation consistency.
 
 import logging
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from manga_translator.cross_page_context import CrossPageContext
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +59,7 @@ class ContextBuilder:
         series_name: str = "",
         chapter: str = "",
         page_num: int = 0,
+        cross_page_ctx: Optional['CrossPageContext'] = None,
     ) -> PageContext:
         """Build context for all texts on a page.
 
@@ -64,21 +68,34 @@ class ContextBuilder:
             series_name: Series name for glossary filtering.
             chapter: Chapter identifier.
             page_num: Page number.
+            cross_page_ctx: Optional cross-page context for multi-page consistency.
 
         Returns:
             PageContext with surrounding text context for each entry.
         """
+        # Merge cross-page glossary with instance glossary
+        merged_glossary = dict(self.glossary)
+        if cross_page_ctx:
+            merged_glossary.update(cross_page_ctx.get_glossary())
+
         entries = []
         for i, text in enumerate(texts):
             prev_start = max(0, i - self.context_window)
             next_end = min(len(texts), i + self.context_window + 1)
+
+            # Filter merged glossary for this text
+            relevant = {}
+            text_lower = text.lower()
+            for term, translation in merged_glossary.items():
+                if term.lower() in text_lower:
+                    relevant[term] = translation
 
             entry = TranslationContext(
                 text=text,
                 index=i,
                 prev_texts=texts[prev_start:i],
                 next_texts=texts[i + 1:next_end],
-                glossary=self._filter_glossary(text),
+                glossary=relevant,
             )
             entries.append(entry)
 
@@ -114,10 +131,19 @@ class ContextBuilder:
 
         return "\n".join(parts)
 
-    def format_page_prompt(self, page_ctx: PageContext) -> str:
+    def format_page_prompt(
+        self,
+        page_ctx: PageContext,
+        cross_page_ctx: Optional['CrossPageContext'] = None,
+    ) -> str:
         """Format entire page context for batch translation.
 
         Creates a single context block for translating all bubbles together.
+
+        Args:
+            page_ctx: The page context to format.
+            cross_page_ctx: Optional cross-page context for dialogue summary
+                and character name hints.
         """
         parts = []
 
@@ -131,6 +157,17 @@ class ContextBuilder:
             if all_terms:
                 terms = ", ".join(f"{k} = {v}" for k, v in all_terms.items())
                 parts.append(f"Terminology: {terms}")
+
+        # Cross-page dialogue summary and character names
+        if cross_page_ctx:
+            summary = cross_page_ctx.get_dialogue_summary()
+            if summary:
+                parts.append(summary)
+
+            char_names = cross_page_ctx.get_character_map()
+            if char_names:
+                names_str = ", ".join(f"{k} = {v}" for k, v in char_names.items())
+                parts.append(f"Character names: {names_str}")
 
         return "\n".join(parts)
 

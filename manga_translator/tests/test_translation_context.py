@@ -7,6 +7,7 @@ from manga_translator.translation_context import (
     PageContext,
     TranslationContext,
 )
+from manga_translator.cross_page_context import CrossPageContext
 
 
 class TestTranslationContext:
@@ -203,3 +204,43 @@ class TestAddCharacterNames:
         assert page.entries[0].character_name == "Luffy"
         assert page.entries[1].character_name == ""
         assert page.entries[2].character_name == "Zoro"
+
+
+class TestCrossPageContextIntegration:
+    """Tests for ContextBuilder with CrossPageContext."""
+
+    def test_build_page_context_with_cross_page_glossary(self):
+        """Cross-page glossary terms merge into per-bubble glossary."""
+        cross_ctx = CrossPageContext()
+        cross_ctx.add_glossary_term("nakama", "comrade")
+
+        builder = ContextBuilder()
+        texts = ["nakama wa daiji", "hello world"]
+        page = builder.build_page_context(texts, cross_page_ctx=cross_ctx)
+
+        assert page.entries[0].glossary == {"nakama": "comrade"}
+        assert page.entries[1].glossary == {}
+
+    def test_format_page_prompt_with_cross_page_dialogue(self):
+        """Dialogue summary appears in page prompt when cross-page context provided."""
+        cross_ctx = CrossPageContext()
+        cross_ctx.update_from_page(0, ["こんにちは"], ["Hello"])
+
+        builder = ContextBuilder()
+        page = PageContext()
+        result = builder.format_page_prompt(page, cross_page_ctx=cross_ctx)
+
+        assert "Previous dialogue:" in result
+        assert "こんにちは -> Hello" in result
+
+    def test_format_page_prompt_with_cross_page_character_names(self):
+        """Character names appear in page prompt."""
+        cross_ctx = CrossPageContext()
+        cross_ctx.add_character_name("太郎", "Taro")
+
+        builder = ContextBuilder()
+        page = PageContext()
+        result = builder.format_page_prompt(page, cross_page_ctx=cross_ctx)
+
+        assert "Character names:" in result
+        assert "太郎 = Taro" in result

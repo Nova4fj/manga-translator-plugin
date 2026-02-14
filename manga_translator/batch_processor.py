@@ -18,6 +18,7 @@ import numpy as np
 from manga_translator.config.settings import PluginSettings, SettingsManager
 from manga_translator.core.image_processor import load_image, save_image
 from manga_translator.manga_translator import MangaTranslationPipeline, PageTranslationResult
+from manga_translator.cross_page_context import CrossPageContext
 
 logger = logging.getLogger(__name__)
 
@@ -103,11 +104,18 @@ class BatchProcessor:
         max_workers: int = 2,
         output_dir: Optional[str] = None,
         output_format: str = "png",
+        enable_cross_page_context: bool = False,
     ):
         if settings is None:
             settings = SettingsManager().get_settings()
         self.settings = settings
-        self.max_workers = max(max_workers, 1)
+        self.enable_cross_page_context = enable_cross_page_context
+        # Force sequential when cross-page context is enabled
+        if enable_cross_page_context:
+            self.max_workers = 1
+            logger.info("Cross-page context enabled: forcing sequential processing")
+        else:
+            self.max_workers = max(max_workers, 1)
         self.output_dir = output_dir
         self.output_format = output_format
 
@@ -159,7 +167,10 @@ class BatchProcessor:
         if self.output_dir:
             os.makedirs(self.output_dir, exist_ok=True)
 
-        # Process pages in parallel
+        # Create cross-page context if enabled
+        cross_page_ctx = CrossPageContext() if self.enable_cross_page_context else None
+
+        # Process pages in parallel (or sequentially if cross-page context)
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             futures: Dict[Future, str] = {}
             for path in valid_paths:
@@ -167,8 +178,13 @@ class BatchProcessor:
                 future = executor.submit(
                     self._process_single_page,
                     path, output_path, source_lang, target_lang,
+                    cross_page_ctx,
                 )
                 futures[future] = path
+
+                # When cross-page context is on, wait for each page before starting the next
+                if cross_page_ctx:
+                    future.result()  # block until done
 
             for future in as_completed(futures):
                 path = futures[future]
@@ -206,6 +222,7 @@ class BatchProcessor:
         output_path: str,
         source_lang: str,
         target_lang: str,
+        cross_page_context: Optional[CrossPageContext] = None,
     ) -> PageResult:
         """Process a single page (runs in a worker thread)."""
         page_result = PageResult(input_path=input_path, output_path=output_path)
@@ -217,6 +234,7 @@ class BatchProcessor:
             pipeline = MangaTranslationPipeline(self.settings)
             translation = pipeline.translate_page(
                 image, source_lang=source_lang, target_lang=target_lang,
+                cross_page_context=cross_page_context,
             )
 
             save_image(translation.final_image, output_path)

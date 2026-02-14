@@ -14,7 +14,7 @@ Quick start::
     result = pipeline.translate_page(image_array)
 """
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 import logging
 

@@ -23,6 +23,7 @@ from manga_translator.components.reading_order import ReadingOrderOptimizer
 from manga_translator.components.font_matcher import FontMatcher
 from manga_translator.components.sfx_detector import SFXDetector, SFXRegion
 from manga_translator.translation_context import ContextBuilder
+from manga_translator.cross_page_context import CrossPageContext
 from manga_translator.config.settings import PluginSettings, SettingsManager
 from manga_translator.core.image_processor import resize_for_processing, scale_bbox
 from manga_translator.core.layer_manager import LayerStack
@@ -157,6 +158,7 @@ class MangaTranslationPipeline:
         target_lang: Optional[str] = None,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
         exclusion_mask: Optional[np.ndarray] = None,
+        cross_page_context: Optional[CrossPageContext] = None,
     ) -> PageTranslationResult:
         """Translate a full manga page.
 
@@ -302,8 +304,12 @@ class MangaTranslationPipeline:
                 texts = [o.text for o in valid_ocr]
 
                 # Build page context for better translations
-                page_ctx = self.context_builder.build_page_context(texts)
-                page_prompt = self.context_builder.format_page_prompt(page_ctx)
+                page_ctx = self.context_builder.build_page_context(
+                    texts, cross_page_ctx=cross_page_context,
+                )
+                page_prompt = self.context_builder.format_page_prompt(
+                    page_ctx, cross_page_ctx=cross_page_context,
+                )
 
                 # Temporarily enhance context prompt on the actual engine
                 openai_engine = self.translator._engines.get("openai")
@@ -390,6 +396,19 @@ class MangaTranslationPipeline:
                     for o in valid_ocr
                 ]
         tracker.complete_step(2)
+
+        # Update cross-page context with this page's translations
+        if cross_page_context and translations:
+            source_texts = [o.text for o in valid_ocr]
+            translated_texts = [t.translated_text for t in translations]
+            cross_page_context.update_from_page(
+                page_num=self.pages_processed if hasattr(self, 'pages_processed') else 0,
+                source_texts=source_texts,
+                translated_texts=translated_texts,
+            )
+            warnings = cross_page_context.check_name_consistency(translated_texts)
+            for w in warnings:
+                logger.warning(w)
 
         # --- Step 4: Inpainting (text removal) ---
         tracker.start_step(3)
@@ -546,6 +565,7 @@ def translate_file(
     reading_direction: str = "rtl",
     detect_sfx: bool = False,
     fonts_dir: Optional[str] = None,
+    cross_page_context: Optional[CrossPageContext] = None,
 ) -> PageTranslationResult:
     """Convenience function: translate a manga image file.
 
@@ -612,7 +632,8 @@ def translate_file(
         print(f"  [{step}/{total}] {message}")
 
     result = pipeline.translate_page(
-        image, progress_callback=console_progress, exclusion_mask=exclusion_mask
+        image, progress_callback=console_progress, exclusion_mask=exclusion_mask,
+        cross_page_context=cross_page_context,
     )
 
     if output_path is None:

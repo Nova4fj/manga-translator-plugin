@@ -167,7 +167,7 @@ def main():
     )
     parser.add_argument("--detect-sfx", action="store_true", help="Enable SFX/onomatopoeia detection")
     parser.add_argument("--fonts-dir", default=None, help="Custom fonts directory for typesetting")
-    parser.add_argument("--version", action="version", version="manga-translator 0.4.0")
+    parser.add_argument("--version", action="version", version="manga-translator 0.5.0")
 
     # Subcommands
     check_parser = subparsers.add_parser("check", help="Check dependency status")
@@ -203,6 +203,11 @@ def main():
         default=None,
         choices=["cbz", "pdf"],
         help="Assemble all translated pages into a single CBZ or PDF",
+    )
+    batch_parser.add_argument(
+        "--cross-page-context",
+        action="store_true",
+        help="Enable cross-page context for consistent character names and terminology (sequential mode)",
     )
 
     args = parser.parse_args()
@@ -343,8 +348,16 @@ def batch_translate(args):
         print(f"  Engine: {settings.translation.primary_engine}")
         return 0
 
+    # Cross-page context for consistent multi-page translations
+    cross_page_ctx = None
+    if getattr(args, 'cross_page_context', False):
+        from manga_translator.cross_page_context import CrossPageContext
+        cross_page_ctx = CrossPageContext()
+
     if not args.quiet:
         print(f"Batch translating {total} files ({args.source_lang} → {args.target_lang})")
+        if cross_page_ctx:
+            print("  Cross-page context: enabled (sequential mode)")
         print("=" * 50)
 
     for i, input_path in enumerate(valid_files, 1):
@@ -374,6 +387,7 @@ def batch_translate(args):
                 tm_db_path=args.tm_db,
                 enable_qc=args.qc,
                 enable_perf=args.perf,
+                cross_page_context=cross_page_ctx,
             )
             status = f"{len(result.bubbles)} bubbles, {result.success_rate:.0%} success"
             if not args.quiet:

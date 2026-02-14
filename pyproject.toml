@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "manga-translator-plugin"
-version = "0.4.0"
+version = "0.5.0"
 description = "Automated manga/comic translation: bubble detection, OCR, translation, inpainting, and typesetting. Works as a GIMP plugin or standalone CLI."
 readme = "README.md"
 license = {text = "GPL-3.0-or-later"}

@@ -2,6 +2,16 @@
 
 All notable changes to Manga Translator Plugin.
 
+## [0.5.0] - 2026-02-14
+
+### Added
+- Cross-page translation context: dialogue history, character names, and glossary terms carry across pages for consistent multi-page translations
+- `CrossPageContext` accumulator with configurable page window and dialogue line limits
+- Heuristic character name detection from translated text (Title Case patterns)
+- Name consistency checking across pages
+- `--cross-page-context` CLI flag for batch translation (forces sequential mode)
+- 18 new tests (553 total)
+
 ## [0.4.0] - 2026-02-14
 
 ### Added

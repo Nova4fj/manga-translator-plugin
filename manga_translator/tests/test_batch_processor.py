@@ -179,3 +179,17 @@ class TestBatchProcessor:
         assert len(progress_calls) == 1
         assert progress_calls[0][0] == 1  # completed
         assert progress_calls[0][1] == 1  # total
+
+
+class TestCrossPageContext:
+    def test_cross_page_forces_sequential(self):
+        """Enabling cross-page context should force max_workers=1."""
+        bp = BatchProcessor(max_workers=4, enable_cross_page_context=True)
+        assert bp.max_workers == 1
+        assert bp.enable_cross_page_context is True
+
+    def test_default_no_cross_page(self):
+        """By default cross-page context is disabled."""
+        bp = BatchProcessor(max_workers=3)
+        assert bp.enable_cross_page_context is False
+        assert bp.max_workers == 3
