@@ -1,6 +1,7 @@
 """Main translation pipeline — wires all components together."""
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import List, Optional, Callable, Tuple
@@ -140,6 +141,7 @@ class MangaTranslationPipeline:
         source_lang: Optional[str] = None,
         target_lang: Optional[str] = None,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        exclusion_mask: Optional[np.ndarray] = None,
     ) -> PageTranslationResult:
         """Translate a full manga page.
 
@@ -148,6 +150,8 @@ class MangaTranslationPipeline:
             source_lang: Override source language.
             target_lang: Override target language.
             progress_callback: Called with (step, total_steps, message).
+            exclusion_mask: Optional binary mask (0 = excluded, 255 = included).
+                Bubbles whose center falls in an excluded region are skipped.
 
         Returns:
             PageTranslationResult with all translation data.
@@ -173,6 +177,12 @@ class MangaTranslationPipeline:
                         b.bbox = scale_bbox(b.bbox, scale)
 
                 logger.info("Detected %d bubbles", len(bubbles))
+
+                # Apply region exclusion filtering
+                if exclusion_mask is not None:
+                    from manga_translator.region_mask import filter_bubbles_by_mask
+                    bubbles = filter_bubbles_by_mask(bubbles, exclusion_mask)
+                    logger.info("After exclusion filtering: %d bubbles", len(bubbles))
             except Exception as e:
                 logger.error("Bubble detection failed: %s", e, exc_info=True)
                 errors.append(f"Bubble detection failed: {e}")
@@ -188,30 +198,38 @@ class MangaTranslationPipeline:
                 layer_stack=layer_stack,
             )
 
-        # --- Step 2: OCR ---
+        # --- Step 2: OCR (parallel) ---
         tracker.start_step(1)
-        ocr_results: List[OCRResult] = []
+        ocr_results: List[OCRResult] = [None] * len(bubbles)  # type: ignore[list-item]
         with self._perf.track("ocr") if self._perf else nullcontext():
-            try:
-                for bubble in bubbles:
+            def _ocr_one(idx_bubble):
+                idx, bubble = idx_bubble
+                try:
                     x, y, w, h = bubble.bbox
                     region = image[y : y + h, x : x + w]
                     if region.size == 0:
-                        ocr_results.append(
-                            OCRResult(text="", confidence=0.0, language=src, engine_used="none")
-                        )
-                        continue
+                        return idx, OCRResult(text="", confidence=0.0, language=src, engine_used="none"), None
                     # Pre-filter: skip OCR on non-text regions
                     score = self.text_filter.analyze_region(region)
                     if not score.has_text:
-                        ocr_results.append(
-                            OCRResult(text="", confidence=0.0, language=src, engine_used="filtered")
-                        )
                         logger.debug("Filtered non-text region [%d]: %s (%.2f)", bubble.id, score.region_type, score.confidence)
-                        continue
+                        return idx, OCRResult(text="", confidence=0.0, language=src, engine_used="filtered"), None
                     result = self.ocr.extract_text(region, language_hint=src)
-                    ocr_results.append(result)
                     logger.debug("OCR [%d]: '%s' (%.2f)", bubble.id, result.text[:50], result.confidence)
+                    return idx, result, None
+                except Exception as e:
+                    logger.warning("OCR failed for bubble %d: %s", bubble.id, e)
+                    return idx, OCRResult(text="", confidence=0.0, language=src, engine_used="error"), f"OCR failed for bubble {bubble.id}: {e}"
+
+            try:
+                max_workers = min(4, len(bubbles))
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {executor.submit(_ocr_one, (i, b)): i for i, b in enumerate(bubbles)}
+                    for future in as_completed(futures):
+                        idx, result, error = future.result()
+                        ocr_results[idx] = result
+                        if error:
+                            errors.append(error)
             except Exception as e:
                 logger.error("OCR failed: %s", e, exc_info=True)
                 errors.append(f"OCR failed: {e}")
@@ -339,27 +357,32 @@ class MangaTranslationPipeline:
         with self._perf.track("inpainting") if self._perf else nullcontext():
             try:
                 for bubble in valid_bubbles:
-                    x, y, w, h = bubble.bbox
-                    region = cleaned[y : y + h, x : x + w]
-                    if region.size == 0:
+                    try:
+                        x, y, w, h = bubble.bbox
+                        region = cleaned[y : y + h, x : x + w]
+                        if region.size == 0:
+                            inpaint_results.append(None)
+                            continue
+
+                        # Create text mask for this bubble
+                        bubble_mask = bubble.mask
+                        if bubble_mask is not None:
+                            # Crop mask to bbox
+                            local_mask = bubble_mask[y : y + h, x : x + w]
+                        else:
+                            local_mask = np.ones((h, w), dtype=np.uint8) * 255
+
+                        text_mask = self.inpainter.create_text_mask(region, local_mask)
+                        result = self.inpainter.remove_text_with_fallback(
+                            region, text_mask,
+                            quality_threshold=self._quality_threshold,
+                        )
+                        cleaned[y : y + h, x : x + w] = result.image
+                        inpaint_results.append(result)
+                    except Exception as e:
+                        logger.warning("Inpainting failed for bubble %d: %s", bubble.id, e)
+                        errors.append(f"Inpainting failed for bubble {bubble.id}: {e}")
                         inpaint_results.append(None)
-                        continue
-
-                    # Create text mask for this bubble
-                    bubble_mask = bubble.mask
-                    if bubble_mask is not None:
-                        # Crop mask to bbox
-                        local_mask = bubble_mask[y : y + h, x : x + w]
-                    else:
-                        local_mask = np.ones((h, w), dtype=np.uint8) * 255
-
-                    text_mask = self.inpainter.create_text_mask(region, local_mask)
-                    result = self.inpainter.remove_text_with_fallback(
-                        region, text_mask,
-                        quality_threshold=self._quality_threshold,
-                    )
-                    cleaned[y : y + h, x : x + w] = result.image
-                    inpaint_results.append(result)
             except Exception as e:
                 logger.error("Inpainting failed: %s", e, exc_info=True)
                 errors.append(f"Inpainting failed: {e}")
@@ -374,20 +397,25 @@ class MangaTranslationPipeline:
         with self._perf.track("typesetting") if self._perf else nullcontext():
             try:
                 for bubble, translation in zip(valid_bubbles, translations):
-                    if not translation.translated_text:
-                        typeset_results.append(None)
-                        continue
+                    try:
+                        if not translation.translated_text:
+                            typeset_results.append(None)
+                            continue
 
-                    result = self.typesetter.typeset_text(
-                        final,
-                        translation.translated_text,
-                        bubble.bbox,
-                        bubble_mask=bubble.mask,
-                        orientation=self.settings.typesetting.orientation,
-                        source_lang=src,
-                    )
-                    final = result.image
-                    typeset_results.append(result)
+                        result = self.typesetter.typeset_text(
+                            final,
+                            translation.translated_text,
+                            bubble.bbox,
+                            bubble_mask=bubble.mask,
+                            orientation=self.settings.typesetting.orientation,
+                            source_lang=src,
+                        )
+                        final = result.image
+                        typeset_results.append(result)
+                    except Exception as e:
+                        logger.warning("Typesetting failed for bubble %d: %s", bubble.id, e)
+                        errors.append(f"Typesetting failed for bubble {bubble.id}: {e}")
+                        typeset_results.append(None)
             except Exception as e:
                 logger.error("Typesetting failed: %s", e, exc_info=True)
                 errors.append(f"Typesetting failed: {e}")
@@ -460,6 +488,7 @@ def translate_file(
     tm_db_path: Optional[str] = None,
     enable_qc: bool = False,
     enable_perf: bool = False,
+    exclude_regions: Optional[str] = None,
 ) -> PageTranslationResult:
     """Convenience function: translate a manga image file.
 
@@ -472,6 +501,7 @@ def translate_file(
         tm_db_path: Path to translation memory database. If set, enables TM.
         enable_qc: Enable quality control checks.
         enable_perf: Enable performance monitoring.
+        exclude_regions: Semicolon-separated exclusion regions (x,y,w,h;...).
 
     Returns:
         PageTranslationResult
@@ -487,6 +517,16 @@ def translate_file(
         InputValidator.validate_output_path(output_path)
 
     image = load_image(input_path)
+
+    # Build exclusion mask from region string if provided
+    exclusion_mask = None
+    if exclude_regions:
+        from manga_translator.region_mask import parse_exclusion_regions, create_exclusion_mask
+        regions = parse_exclusion_regions(exclude_regions)
+        if regions:
+            h, w = image.shape[:2]
+            exclusion_mask = create_exclusion_mask(h, w, regions)
+            logger.info("Created exclusion mask with %d regions", len(regions))
 
     if settings is None:
         settings = SettingsManager().get_settings()
@@ -511,7 +551,9 @@ def translate_file(
     def console_progress(step, total, message):
         print(f"  [{step}/{total}] {message}")
 
-    result = pipeline.translate_page(image, progress_callback=console_progress)
+    result = pipeline.translate_page(
+        image, progress_callback=console_progress, exclusion_mask=exclusion_mask
+    )
 
     if output_path is None:
         base, ext = os.path.splitext(input_path)

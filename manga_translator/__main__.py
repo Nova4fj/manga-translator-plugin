@@ -143,6 +143,11 @@ def main():
     parser.add_argument("--tm-db", default=None, help="Translation memory database path")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be done without executing")
     parser.add_argument(
+        "--exclude-region",
+        default=None,
+        help="Exclude regions from bubble detection (x,y,w,h;x,y,w,h)",
+    )
+    parser.add_argument(
         "--export-format",
         choices=["png", "jpg", "pdf", "cbz"],
         default=None,
@@ -262,6 +267,7 @@ def main():
         tm_db_path=args.tm_db,
         enable_qc=args.qc,
         enable_perf=args.perf,
+        exclude_regions=args.exclude_region,
     )
 
     if not args.quiet:
