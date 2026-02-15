@@ -6,6 +6,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import List, Optional, Callable
 
+import cv2
 import numpy as np
 
 from manga_translator.perf_monitor import PerfMonitor
@@ -431,11 +432,22 @@ class MangaTranslationPipeline:
                         else:
                             local_mask = np.ones((h, w), dtype=np.uint8) * 255
 
-                        text_mask = self.inpainter.create_text_mask(region, local_mask)
+                        # Erode the mask inward so text detection and
+                        # inpainting never touch the bubble outline.
+                        # The margin matches the inpainter's mask_dilation
+                        # so the dilated text mask stays inside the bubble.
+                        margin = self.inpainter.mask_dilation + 2
+                        erode_k = cv2.getStructuringElement(
+                            cv2.MORPH_ELLIPSE,
+                            (margin * 2 + 1, margin * 2 + 1),
+                        )
+                        inner_mask = cv2.erode(local_mask, erode_k, iterations=1)
+
+                        text_mask = self.inpainter.create_text_mask(region, inner_mask)
                         result = self.inpainter.remove_text_with_fallback(
                             region, text_mask,
                             quality_threshold=self._quality_threshold,
-                            constraint_mask=local_mask,
+                            constraint_mask=inner_mask,
                         )
                         cleaned[y : y + h, x : x + w] = result.image
                         inpaint_results.append(result)
