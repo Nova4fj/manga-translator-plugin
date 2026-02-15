@@ -483,19 +483,17 @@ class MangaTranslationPipeline:
                         else:
                             orig_full_mask[y : y + h, x : x + w] = local_mask
 
-                        # --- Step 1: Find the bubble body ---
-                        # Heavy erosion removes the narrow tail but
-                        # keeps the round body.
+                        # Hybrid approach: fit a smooth ellipse for the
+                        # bubble body, then union with the original tail.
+
+                        # Gentle erosion to isolate the round body
+                        # (smaller kernel preserves more of the shape).
                         erode_k = cv2.getStructuringElement(
-                            cv2.MORPH_ELLIPSE, (31, 31),
+                            cv2.MORPH_ELLIPSE, (15, 15),
                         )
                         body_mask = cv2.erode(
                             orig_full_mask, erode_k, iterations=1,
                         )
-
-                        # Fit an ellipse to the eroded body (has
-                        # many more contour points than the original
-                        # sparse contour, giving a much better fit).
                         body_contours, _ = cv2.findContours(
                             body_mask, cv2.RETR_EXTERNAL,
                             cv2.CHAIN_APPROX_NONE,
@@ -512,30 +510,15 @@ class MangaTranslationPipeline:
                             )
                             ellipse = cv2.fitEllipse(body_contour)
                             center, axes, angle = ellipse
-                            # Scale up to compensate for the erosion
-                            # and cover all text.
-                            sc = 1.05
+                            # Scale up just enough to cover the text
+                            # area without swallowing the tail.
                             sc_axes = (
-                                axes[0] + 31 * 2 * sc,
-                                axes[1] + 31 * 2 * sc,
+                                axes[0] + 10,
+                                axes[1] + 10,
                             )
                             scaled_ellipse = (center, sc_axes, angle)
 
-                            # --- Step 2: Find the speech tail ---
-                            # Tail = original mask minus eroded body
-                            # (the narrow part that erosion removed).
-                            tail_region = cv2.subtract(
-                                orig_full_mask, body_mask,
-                            )
-
-                            # Keep only the largest connected component
-                            # (the actual tail, not edge fragments).
-                            n_labels, labels, stats, _ = (
-                                cv2.connectedComponentsWithStats(
-                                    tail_region, connectivity=8,
-                                )
-                            )
-
+                            # Start with the smooth ellipse body.
                             bubble_canvas = np.zeros(
                                 cleaned.shape[:2], dtype=np.uint8,
                             )
@@ -544,60 +527,12 @@ class MangaTranslationPipeline:
                                 255, thickness=-1,
                             )
 
-                            if n_labels > 1:
-                                areas = stats[1:, cv2.CC_STAT_AREA]
-                                biggest = np.argmax(areas) + 1
-                                biggest_area = areas[biggest - 1]
-
-                                # Only add tail if it's large enough
-                                # to be a real speech tail (> 100 px).
-                                if biggest_area > 100:
-                                    tail_pts = np.argwhere(
-                                        labels == biggest,
-                                    )
-                                    cx, cy = center
-                                    # Find the tail tip (furthest
-                                    # point from the ellipse center).
-                                    dists = (
-                                        (tail_pts[:, 1] - cx) ** 2
-                                        + (tail_pts[:, 0] - cy) ** 2
-                                    )
-                                    tip_idx = np.argmax(dists)
-                                    tip_y, tip_x = tail_pts[tip_idx]
-
-                                    # Direction from center to tip
-                                    d = np.array(
-                                        [tip_x - cx, tip_y - cy],
-                                        dtype=np.float64,
-                                    )
-                                    d_len = np.linalg.norm(d)
-                                    if d_len > 0:
-                                        d_u = d / d_len
-                                        perp = np.array(
-                                            [-d_u[1], d_u[0]],
-                                        )
-                                        # Base at 50% from center to
-                                        # tip (well inside ellipse).
-                                        base_c = (
-                                            np.array([cx, cy])
-                                            + d_u * d_len * 0.5
-                                        )
-                                        # Base half-width proportional
-                                        # to tail length.
-                                        hw = max(d_len * 0.3, 15)
-                                        bl = base_c + perp * hw
-                                        br = base_c - perp * hw
-                                        tri = np.array(
-                                            [
-                                                bl.astype(np.int32),
-                                                [tip_x, tip_y],
-                                                br.astype(np.int32),
-                                            ],
-                                            dtype=np.int32,
-                                        )
-                                        cv2.fillPoly(
-                                            bubble_canvas, [tri], 255,
-                                        )
+                            # Union with the original mask to recover
+                            # the real tail (anything outside the
+                            # ellipse that was in the original shape).
+                            bubble_canvas = cv2.bitwise_or(
+                                bubble_canvas, orig_full_mask,
+                            )
 
                             # Draw the combined shape
                             final_contours, _ = cv2.findContours(

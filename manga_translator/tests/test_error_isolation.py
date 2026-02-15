@@ -155,30 +155,40 @@ class TestSingleBubbleInpaintFailure:
             )
         )
 
-        # Force an inpainting failure on the 2nd bubble by patching cv2.erode.
-        # The inpainting loop calls cv2.erode once per bubble for body erosion.
-        _orig_erode = _cv2.erode
-        _erode_calls = [0]
-
-        def _failing_erode(*args, **kwargs):
-            _erode_calls[0] += 1
-            if _erode_calls[0] == 2:  # 2nd bubble
+        # Force an inpainting failure on the 2nd bubble by giving it a
+        # mask object that raises when the inpainting code tries to
+        # slice it (bubble.mask[y:y+h, x:x+w]).
+        class _ExplodingMask:
+            """Array-like that raises on slice access."""
+            shape = (300, 300)
+            def __getitem__(self, key):
                 raise RuntimeError("Inpainting crashed on bubble 1")
-            return _orig_erode(*args, **kwargs)
+            def __setitem__(self, key, val):
+                raise RuntimeError("Inpainting crashed on bubble 1")
 
-        with patch("cv2.erode", side_effect=_failing_erode):
-            result = pipeline.translate_page(image, source_lang="ja", target_lang="en")
+        _orig_detect = pipeline.detector.detect_bubbles
+
+        def _detect_with_bad_bubble(*a, **kw):
+            detected = _orig_detect(*a, **kw)
+            if len(detected) > 1:
+                detected[1].mask = _ExplodingMask()
+            return detected
+
+        pipeline.detector.detect_bubbles = MagicMock(side_effect=_detect_with_bad_bubble)
+        result = pipeline.translate_page(image, source_lang="ja", target_lang="en")
 
         assert result is not None
         inpaint_errors = [e for e in result.errors if "Inpainting failed for bubble" in e]
         assert len(inpaint_errors) == 1
         # All 3 bubbles still present in result
         assert len(result.bubbles) == 3
-        # The failed bubble has None for inpaint_result
-        assert result.bubbles[1].inpaint_result is None
-        # The others have actual results
-        assert result.bubbles[0].inpaint_result is not None
-        assert result.bubbles[2].inpaint_result is not None
+        # Exactly one bubble has a failed (None) inpaint_result —
+        # the one whose mask we corrupted (id=1).
+        failed = [b for b in result.bubbles if b.inpaint_result is None]
+        succeeded = [b for b in result.bubbles if b.inpaint_result is not None]
+        assert len(failed) == 1
+        assert failed[0].bubble.id == 1
+        assert len(succeeded) == 2
 
 
 class TestSingleBubbleTypesetFailure:
