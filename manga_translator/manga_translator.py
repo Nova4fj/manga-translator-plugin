@@ -483,11 +483,7 @@ class MangaTranslationPipeline:
                         else:
                             orig_full_mask[y : y + h, x : x + w] = local_mask
 
-                        # Hybrid approach: fit a smooth ellipse for the
-                        # bubble body, then union with the original tail.
-
-                        # Gentle erosion to isolate the round body
-                        # (smaller kernel preserves more of the shape).
+                        # Ellipse body + triangle tail, merged.
                         erode_k = cv2.getStructuringElement(
                             cv2.MORPH_ELLIPSE, (15, 15),
                         )
@@ -498,7 +494,6 @@ class MangaTranslationPipeline:
                             body_mask, cv2.RETR_EXTERNAL,
                             cv2.CHAIN_APPROX_NONE,
                         )
-
                         can_fit = (
                             body_contours
                             and len(max(body_contours, key=cv2.contourArea)) >= 5
@@ -510,15 +505,10 @@ class MangaTranslationPipeline:
                             )
                             ellipse = cv2.fitEllipse(body_contour)
                             center, axes, angle = ellipse
-                            # Scale up just enough to cover the text
-                            # area without swallowing the tail.
-                            sc_axes = (
-                                axes[0] + 10,
-                                axes[1] + 10,
-                            )
+                            sc_axes = (axes[0] + 30, axes[1] + 30)
                             scaled_ellipse = (center, sc_axes, angle)
 
-                            # Start with the smooth ellipse body.
+                            # Draw the ellipse.
                             bubble_canvas = np.zeros(
                                 cleaned.shape[:2], dtype=np.uint8,
                             )
@@ -527,14 +517,47 @@ class MangaTranslationPipeline:
                                 255, thickness=-1,
                             )
 
-                            # Union with the original mask to recover
-                            # the real tail (anything outside the
-                            # ellipse that was in the original shape).
-                            bubble_canvas = cv2.bitwise_or(
-                                bubble_canvas, orig_full_mask,
+                            # Find the tail: original mask minus ellipse.
+                            tail_region = cv2.subtract(
+                                orig_full_mask, bubble_canvas,
                             )
+                            tail_pts = np.argwhere(tail_region > 0)
+                            if len(tail_pts) > 50:
+                                cx, cy = center
+                                dists = (
+                                    (tail_pts[:, 1] - cx) ** 2
+                                    + (tail_pts[:, 0] - cy) ** 2
+                                )
+                                tip_idx = np.argmax(dists)
+                                tip_y, tip_x = tail_pts[tip_idx]
+                                d = np.array(
+                                    [tip_x - cx, tip_y - cy],
+                                    dtype=np.float64,
+                                )
+                                d_len = np.linalg.norm(d)
+                                if d_len > 0:
+                                    d_u = d / d_len
+                                    perp = np.array([-d_u[1], d_u[0]])
+                                    base_c = (
+                                        np.array([cx, cy])
+                                        + d_u * d_len * 0.35
+                                    )
+                                    hw = max(d_len * 0.25, 12)
+                                    bl = base_c + perp * hw
+                                    br = base_c - perp * hw
+                                    tri = np.array(
+                                        [
+                                            bl.astype(np.int32),
+                                            [tip_x, tip_y],
+                                            br.astype(np.int32),
+                                        ],
+                                        dtype=np.int32,
+                                    )
+                                    cv2.fillPoly(
+                                        bubble_canvas, [tri], 255,
+                                    )
 
-                            # Draw the combined shape
+                            # Draw the merged contour
                             final_contours, _ = cv2.findContours(
                                 bubble_canvas,
                                 cv2.RETR_EXTERNAL,
