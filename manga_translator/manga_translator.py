@@ -443,6 +443,19 @@ class MangaTranslationPipeline:
                         )
                         inner_mask = cv2.erode(local_mask, erode_k, iterations=1)
 
+                        # Save the outline pixels from the original
+                        # image so we can restore them after cleaning.
+                        # Use the actual detected contour for precision.
+                        contour_line = np.zeros((h, w), dtype=np.uint8)
+                        if bubble.contour is not None:
+                            shifted = bubble.contour.copy()
+                            shifted[:, :, 0] -= x
+                            shifted[:, :, 1] -= y
+                            cv2.drawContours(
+                                contour_line, [shifted], -1, 255, thickness=2,
+                            )
+                        original_outline = region.copy()
+
                         text_mask = self.inpainter.create_text_mask(region, inner_mask)
                         result = self.inpainter.remove_text_with_fallback(
                             region, text_mask,
@@ -450,6 +463,22 @@ class MangaTranslationPipeline:
                             constraint_mask=inner_mask,
                         )
                         cleaned[y : y + h, x : x + w] = result.image
+
+                        # Fill the entire margin (inner_mask → local_mask)
+                        # with the bubble background color to remove all
+                        # residual source text near the edges.
+                        margin_zone = cv2.subtract(local_mask, inner_mask)
+                        if np.count_nonzero(margin_zone) > 0:
+                            inpainted = cleaned[y : y + h, x : x + w]
+                            inner_pixels = inpainted[inner_mask > 0]
+                            if len(inner_pixels) > 0:
+                                bg = np.median(inner_pixels, axis=0).astype(np.uint8)
+                                inpainted[margin_zone > 0] = bg
+
+                        # Restore the original outline pixels so the
+                        # bubble contour line is perfectly preserved.
+                        outline_dst = cleaned[y : y + h, x : x + w]
+                        outline_dst[contour_line > 0] = original_outline[contour_line > 0]
                         inpaint_results.append(result)
                     except Exception as e:
                         logger.warning("Inpainting failed for bubble %d: %s", bubble.id, e)
