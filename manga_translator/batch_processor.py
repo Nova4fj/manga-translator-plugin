@@ -235,6 +235,11 @@ class BatchProcessor:
                 cross_page_context=cross_page_context,
             )
 
+            # Save cleaned (no-text) intermediate image
+            no_text_path = self._get_no_text_path(output_path)
+            save_image(translation.cleaned_image, no_text_path)
+
+            # Save final translated (lettered) image
             save_image(translation.final_image, output_path)
 
             page_result.status = "complete"
@@ -252,6 +257,14 @@ class BatchProcessor:
 
         page_result.processing_time = time.time() - start
         return page_result
+
+    def _get_no_text_path(self, output_path: str) -> str:
+        """Derive the no-text (cleaned) output path from the translated output path."""
+        base, ext = os.path.splitext(output_path)
+        # Replace _translated suffix if present, otherwise just append _no_text
+        if base.endswith("_translated"):
+            base = base[: -len("_translated")]
+        return f"{base}_no_text{ext}"
 
     def _get_output_path(self, input_path: str) -> str:
         """Determine the output path for a given input file."""

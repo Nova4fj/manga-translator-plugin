@@ -294,8 +294,12 @@ def main():
     )
 
     if not args.quiet:
+        import os as _os
+        base, ext = _os.path.splitext(args.input)
         print(f"\nResults: {len(result.bubbles)} bubbles translated")
         print(f"Success rate: {result.success_rate:.0%}")
+        print(f"Cleaned image: {base}_no_text{ext}")
+        print(f"Translated image: {output or f'{base}_translated{ext}'}")
         if result.errors:
             print(f"Errors: {len(result.errors)}")
             for err in result.errors:

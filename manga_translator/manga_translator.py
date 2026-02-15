@@ -707,10 +707,16 @@ def translate_file(
         cross_page_context=cross_page_context,
     )
 
-    if output_path is None:
-        base, ext = os.path.splitext(input_path)
-        output_path = f"{base}_translated{ext}"
+    base, ext = os.path.splitext(input_path)
 
+    # Save cleaned (no-text) intermediate image
+    no_text_path = f"{base}_no_text{ext}"
+    save_image(result.cleaned_image, no_text_path)
+    logger.info("Saved cleaned image to %s", no_text_path)
+
+    # Save final translated (lettered) image
+    if output_path is None:
+        output_path = f"{base}_translated{ext}"
     save_image(result.final_image, output_path)
     logger.info("Saved translated image to %s", output_path)
 
