@@ -123,9 +123,17 @@ class TestSingleBubbleOCRFailure:
 
 
 class TestSingleBubbleInpaintFailure:
-    """Inpainting failure on one bubble should not prevent others."""
+    """Inpainting failure on one bubble should not prevent others.
+
+    The pipeline now performs inline flat-fill inpainting (no external method
+    call), so we force a failure by patching cv2.erode to raise on the second
+    invocation (one call per bubble in the inpainting loop).
+    """
 
     def test_single_bubble_inpaint_failure(self, pipeline):
+        import cv2 as _cv2
+        from unittest.mock import patch
+
         image = _make_image(300, 300)
         bubbles = [_make_bubble(0, 10, 10, 50, 50),
                    _make_bubble(1, 80, 80, 50, 50),
@@ -139,20 +147,6 @@ class TestSingleBubbleInpaintFailure:
         pipeline.translator.translate_batch = MagicMock(
             side_effect=lambda texts, src, tgt: [_good_translation() for _ in texts]
         )
-
-        # Inpainting: fail on 2nd call (bubble index 1)
-        inpaint_call_count = [0]
-        def mock_remove_text(region, mask, quality_threshold=0.5, constraint_mask=None):
-            idx = inpaint_call_count[0]
-            inpaint_call_count[0] += 1
-            if idx == 1:
-                raise RuntimeError("Inpainting crashed on bubble 1")
-            return _good_inpaint_result(region)
-
-        pipeline.inpainter.create_text_mask = MagicMock(
-            side_effect=lambda region, mask: np.ones(region.shape[:2], dtype=np.uint8) * 255
-        )
-        pipeline.inpainter.remove_text_with_fallback = MagicMock(side_effect=mock_remove_text)
         pipeline.typesetter.typeset_text = MagicMock(
             side_effect=lambda img, text, bbox, **kw: TypesetResult(
                 image=img.copy(),
@@ -161,7 +155,19 @@ class TestSingleBubbleInpaintFailure:
             )
         )
 
-        result = pipeline.translate_page(image, source_lang="ja", target_lang="en")
+        # Force an inpainting failure on the 2nd bubble by patching cv2.erode.
+        # The inpainting loop calls cv2.erode once per bubble for body erosion.
+        _orig_erode = _cv2.erode
+        _erode_calls = [0]
+
+        def _failing_erode(*args, **kwargs):
+            _erode_calls[0] += 1
+            if _erode_calls[0] == 2:  # 2nd bubble
+                raise RuntimeError("Inpainting crashed on bubble 1")
+            return _orig_erode(*args, **kwargs)
+
+        with patch("cv2.erode", side_effect=_failing_erode):
+            result = pipeline.translate_page(image, source_lang="ja", target_lang="en")
 
         assert result is not None
         inpaint_errors = [e for e in result.errors if "Inpainting failed for bubble" in e]

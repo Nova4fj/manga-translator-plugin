@@ -62,6 +62,14 @@ class ProgressTracker:
             )
             self._notify()
 
+    def skip_step(self, step_index: int) -> None:
+        """Mark a step as skipped (excluded from progress calculation)."""
+        if 0 <= step_index < len(self.steps):
+            step = self.steps[step_index]
+            step.status = "skipped"
+            self._total_weight -= step.weight
+            self._notify()
+
     def fail_step(self, step_index: int, error: str = "") -> None:
         """Mark a step as failed."""
         if 0 <= step_index < len(self.steps):
@@ -97,7 +105,7 @@ class ProgressTracker:
         """Get a text summary of pipeline progress."""
         lines = []
         for i, step in enumerate(self.steps):
-            icon = {"pending": "⬜", "running": "🔄", "completed": "✅", "failed": "❌"}
+            icon = {"pending": "⬜", "running": "🔄", "completed": "✅", "failed": "❌", "skipped": "⏭️"}
             elapsed = ""
             if step.completed and step.started:
                 elapsed = f" ({step.completed - step.started:.1f}s)"

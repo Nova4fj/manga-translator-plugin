@@ -321,29 +321,48 @@ class Inpainter:
         bubble_region = gray.copy()
         bubble_region[bubble_mask == 0] = 255
 
-        # 3. Adaptive threshold to find dark strokes (text) on a light bg.
-        #    THRESH_BINARY_INV turns dark pixels white in the output mask.
-        block_size = self._adaptive_block_size(bubble_region)
-        thresh = cv2.adaptiveThreshold(
-            bubble_region,
-            255,
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY_INV,
-            blockSize=block_size,
-            C=10,
-        )
+        # 3. Determine bubble background brightness.  For light bubbles
+        #    (typical manga), use a direct intensity threshold that is far
+        #    more reliable than adaptive/Otsu which can miss thin or
+        #    anti-aliased strokes.
+        interior_pixels = gray[bubble_mask > 0]
+        bg_bright = len(interior_pixels) > 0 and float(np.percentile(interior_pixels, 90)) > 180
 
-        # 4. Restrict to bubble interior only
-        thresh = cv2.bitwise_and(thresh, thresh, mask=bubble_mask)
+        if bg_bright:
+            # Light bubble: mark every pixel significantly darker than the
+            # background as text.  The 90th-percentile represents the clean
+            # background; anything >50 levels below it is clearly text.
+            bg_level = float(np.percentile(interior_pixels, 90))
+            dark_cutoff = max(int(bg_level - 50), 80)
+            thresh = np.zeros_like(gray, dtype=np.uint8)
+            thresh[gray < dark_cutoff] = 255
+            thresh[bubble_mask == 0] = 0
+        else:
+            # Darker / patterned bubble: fall back to adaptive + Otsu
+            block_size = self._adaptive_block_size(bubble_region)
+            thresh_adaptive = cv2.adaptiveThreshold(
+                bubble_region,
+                255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY_INV,
+                blockSize=block_size,
+                C=10,
+            )
+            _, thresh_otsu = cv2.threshold(
+                bubble_region, 0, 255,
+                cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU,
+            )
+            thresh = cv2.bitwise_or(thresh_adaptive, thresh_otsu)
+            thresh = cv2.bitwise_and(thresh, thresh, mask=bubble_mask)
 
-        # 5. Morphological cleanup — close small gaps inside characters,
+        # 4. Morphological cleanup — close small gaps inside characters,
         #    then open to remove noise specks.
-        close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
         open_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
         cleaned = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, close_kernel, iterations=1)
         cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, open_kernel, iterations=1)
 
-        # 6. Filter out tiny connected components (noise) — keep only
+        # 5. Filter out tiny connected components (noise) — keep only
         #    components whose area is >= a minimum fraction of the bubble.
         num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
             cleaned, connectivity=8

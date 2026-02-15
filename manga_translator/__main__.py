@@ -118,13 +118,17 @@ def check_dependencies(args=None):
     return 0
 
 
-def main():
+def _build_translate_parser():
+    """Build a parser for the default translate command (no subparsers)."""
     parser = argparse.ArgumentParser(
         description="Manga Translator — Translate manga pages from the command line"
     )
-    subparsers = parser.add_subparsers(dest="command")
+    _add_translate_args(parser)
+    return parser
 
-    # Default translate command (positional arg)
+
+def _add_translate_args(parser):
+    """Add translate-mode arguments to a parser."""
     parser.add_argument("input", nargs="?", help="Input manga image path")
     parser.add_argument("-o", "--output", help="Output path (default: <input>_translated.<ext>)")
     parser.add_argument("-s", "--source-lang", default="ja", help="Source language (default: ja)")
@@ -167,50 +171,79 @@ def main():
     )
     parser.add_argument("--detect-sfx", action="store_true", help="Enable SFX/onomatopoeia detection")
     parser.add_argument("--fonts-dir", default=None, help="Custom fonts directory for typesetting")
+    parser.add_argument("--cleanup-only", action="store_true", help="Only run cleanup phase (no typesetting), save _no_text image only")
     parser.add_argument("--version", action="version", version="manga-translator 0.5.0")
 
-    # Subcommands
-    check_parser = subparsers.add_parser("check", help="Check dependency status")
-    check_parser.add_argument("--validate-keys", action="store_true", help="Test API key validity")
 
-    batch_parser = subparsers.add_parser("batch", help="Batch translate multiple files")
-    batch_parser.add_argument("files", nargs="+", help="Input image files")
-    batch_parser.add_argument("-o", "--output-dir", help="Output directory (default: same as input)")
-    batch_parser.add_argument("-s", "--source-lang", default="ja")
-    batch_parser.add_argument("-t", "--target-lang", default="en")
-    batch_parser.add_argument("--engine", choices=["deepl", "openai", "argos"], default=None)
-    batch_parser.add_argument("-v", "--verbose", action="store_true")
-    batch_parser.add_argument("--log-file", default=None, help="Write logs to file")
-    batch_parser.add_argument("-q", "--quiet", action="store_true", help="Suppress progress output")
-    batch_parser.add_argument("--qc", action="store_true", help="Enable quality control checks")
-    batch_parser.add_argument("--perf", action="store_true", help="Show performance report")
-    batch_parser.add_argument("--tm-db", default=None, help="Translation memory database path")
-    batch_parser.add_argument("--dry-run", action="store_true", help="Show what would be done without executing")
-    batch_parser.add_argument(
-        "--export-format",
-        choices=["png", "jpg", "pdf", "cbz"],
-        default=None,
-        help="Output export format",
-    )
-    batch_parser.add_argument(
-        "--preset",
-        choices=["fast", "balanced", "quality"],
-        default=None,
-        help="Translation quality preset",
-    )
-    batch_parser.add_argument(
-        "--assemble",
-        default=None,
-        choices=["cbz", "pdf"],
-        help="Assemble all translated pages into a single CBZ or PDF",
-    )
-    batch_parser.add_argument(
-        "--cross-page-context",
-        action="store_true",
-        help="Enable cross-page context for consistent character names and terminology (sequential mode)",
-    )
-
+def _parse_translate_args():
+    """Parse args for default translate mode (no subcommands)."""
+    parser = _build_translate_parser()
     args = parser.parse_args()
+    args.command = None
+    return args
+
+
+def main():
+    # Detect whether the user is invoking a subcommand or the default translate
+    # mode.  argparse cannot reliably handle both subparsers and a positional
+    # 'input' argument on the same parser (file paths get mistaken for
+    # subcommand names).  We solve this by routing to a subparser-free parser
+    # when the first positional token isn't a known subcommand.
+    _subcommands = {"check", "batch"}
+    _first_pos = next((a for a in sys.argv[1:] if not a.startswith("-")), None)
+
+    if _first_pos is None or _first_pos not in _subcommands:
+        # Default translate mode — use a clean parser without subparsers
+        args = _parse_translate_args()
+    else:
+        # Subcommand mode
+        parser = argparse.ArgumentParser(
+            description="Manga Translator — Translate manga pages from the command line"
+        )
+        subparsers = parser.add_subparsers(dest="command")
+
+        check_parser = subparsers.add_parser("check", help="Check dependency status")
+        check_parser.add_argument("--validate-keys", action="store_true", help="Test API key validity")
+
+        batch_parser = subparsers.add_parser("batch", help="Batch translate multiple files")
+        batch_parser.add_argument("files", nargs="+", help="Input image files")
+        batch_parser.add_argument("-o", "--output-dir", help="Output directory (default: same as input)")
+        batch_parser.add_argument("-s", "--source-lang", default="ja")
+        batch_parser.add_argument("-t", "--target-lang", default="en")
+        batch_parser.add_argument("--engine", choices=["deepl", "openai", "argos"], default=None)
+        batch_parser.add_argument("-v", "--verbose", action="store_true")
+        batch_parser.add_argument("--log-file", default=None, help="Write logs to file")
+        batch_parser.add_argument("-q", "--quiet", action="store_true", help="Suppress progress output")
+        batch_parser.add_argument("--qc", action="store_true", help="Enable quality control checks")
+        batch_parser.add_argument("--perf", action="store_true", help="Show performance report")
+        batch_parser.add_argument("--tm-db", default=None, help="Translation memory database path")
+        batch_parser.add_argument("--dry-run", action="store_true", help="Show what would be done without executing")
+        batch_parser.add_argument(
+            "--export-format",
+            choices=["png", "jpg", "pdf", "cbz"],
+            default=None,
+            help="Output export format",
+        )
+        batch_parser.add_argument(
+            "--preset",
+            choices=["fast", "balanced", "quality"],
+            default=None,
+            help="Translation quality preset",
+        )
+        batch_parser.add_argument(
+            "--assemble",
+            default=None,
+            choices=["cbz", "pdf"],
+            help="Assemble all translated pages into a single CBZ or PDF",
+        )
+        batch_parser.add_argument(
+            "--cross-page-context",
+            action="store_true",
+            help="Enable cross-page context for consistent character names and terminology (sequential mode)",
+        )
+        batch_parser.add_argument("--cleanup-only", action="store_true", help="Only run cleanup phase (no typesetting), save _no_text image only")
+
+        args = parser.parse_args()
 
     if args.command == "check":
         return check_dependencies(args)
@@ -291,6 +324,7 @@ def main():
         reading_direction=args.reading_direction,
         detect_sfx=args.detect_sfx,
         fonts_dir=args.fonts_dir,
+        cleanup_only=args.cleanup_only,
     )
 
     if not args.quiet:
@@ -299,7 +333,8 @@ def main():
         print(f"\nResults: {len(result.bubbles)} bubbles translated")
         print(f"Success rate: {result.success_rate:.0%}")
         print(f"Cleaned image: {base}_no_text{ext}")
-        print(f"Translated image: {output or f'{base}_translated{ext}'}")
+        if not args.cleanup_only:
+            print(f"Translated image: {output or f'{base}_translated{ext}'}")
         if result.errors:
             print(f"Errors: {len(result.errors)}")
             for err in result.errors:
@@ -406,6 +441,7 @@ def batch_translate(args):
                 enable_qc=args.qc,
                 enable_perf=args.perf,
                 cross_page_context=cross_page_ctx,
+                cleanup_only=args.cleanup_only,
             )
             status = f"{len(result.bubbles)} bubbles, {result.success_rate:.0%} success"
             if not args.quiet:

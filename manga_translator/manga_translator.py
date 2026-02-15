@@ -160,6 +160,7 @@ class MangaTranslationPipeline:
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
         exclusion_mask: Optional[np.ndarray] = None,
         cross_page_context: Optional[CrossPageContext] = None,
+        cleanup_only: bool = False,
     ) -> PageTranslationResult:
         """Translate a full manga page.
 
@@ -170,6 +171,7 @@ class MangaTranslationPipeline:
             progress_callback: Called with (step, total_steps, message).
             exclusion_mask: Optional binary mask (0 = excluded, 255 = included).
                 Bubbles whose center falls in an excluded region are skipped.
+            cleanup_only: If True, skip typesetting (only detect, OCR, translate, inpaint).
 
         Returns:
             PageTranslationResult with all translation data.
@@ -425,89 +427,200 @@ class MangaTranslationPipeline:
                             inpaint_results.append(None)
                             continue
 
-                        # Create text mask for this bubble
+                        # Determine the bubble background colour from
+                        # the brightest pixels inside the bubble.
                         bubble_mask = bubble.mask
                         if bubble_mask is not None:
                             local_mask = bubble_mask[y : y + h, x : x + w]
                         else:
                             local_mask = np.ones((h, w), dtype=np.uint8) * 255
-
-                        # Erode the mask inward so text detection and
-                        # inpainting never touch the bubble outline.
-                        # The margin matches the inpainter's mask_dilation
-                        # so the dilated text mask stays inside the bubble.
-                        margin = self.inpainter.mask_dilation + 2
-                        erode_k = cv2.getStructuringElement(
-                            cv2.MORPH_ELLIPSE,
-                            (margin * 2 + 1, margin * 2 + 1),
-                        )
-                        inner_mask = cv2.erode(local_mask, erode_k, iterations=1)
-
-                        # Save the outline pixels from the original
-                        # image so we can restore them after cleaning.
-                        # Use the actual detected contour for precision.
-                        contour_line = np.zeros((h, w), dtype=np.uint8)
-                        if bubble.contour is not None:
-                            shifted = bubble.contour.copy()
-                            shifted[:, :, 0] -= x
-                            shifted[:, :, 1] -= y
-                            cv2.drawContours(
-                                contour_line, [shifted], -1, 255, thickness=2,
-                            )
-                        original_outline = region.copy()
-
-                        text_mask = self.inpainter.create_text_mask(region, inner_mask)
-                        result = self.inpainter.remove_text_with_fallback(
-                            region, text_mask,
-                            quality_threshold=self._quality_threshold,
-                            constraint_mask=inner_mask,
-                        )
-                        cleaned[y : y + h, x : x + w] = result.image
-
-                        # Fill the entire margin (inner_mask → local_mask)
-                        # with the bubble background color to remove all
-                        # residual source text near the edges.
-                        margin_zone = cv2.subtract(local_mask, inner_mask)
-                        if np.count_nonzero(margin_zone) > 0:
-                            inpainted = cleaned[y : y + h, x : x + w]
-                            inner_pixels = inpainted[inner_mask > 0]
-                            if len(inner_pixels) > 0:
-                                bg = np.median(inner_pixels, axis=0).astype(np.uint8)
-                                inpainted[margin_zone > 0] = bg
-
-                        # Clean overflow text just outside the bubble.
-                        # Only fill dark pixels on locally light
-                        # backgrounds to avoid damaging nearby artwork.
-                        ext_dist = max(min(w, h) // 8, 12)
-                        ext_k = cv2.getStructuringElement(
-                            cv2.MORPH_ELLIPSE,
-                            (ext_dist * 2 + 1, ext_dist * 2 + 1),
-                        )
-                        exterior = cv2.subtract(
-                            cv2.dilate(local_mask, ext_k, iterations=1),
-                            local_mask,
-                        )
-                        if np.count_nonzero(exterior) > 0:
-                            ext_region = cleaned[y : y + h, x : x + w]
-                            if ext_region.ndim == 3:
-                                ext_gray = cv2.cvtColor(ext_region, cv2.COLOR_BGR2GRAY)
+                        if region.ndim == 3:
+                            region_gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
+                        else:
+                            region_gray = region
+                        interior_vals = region_gray[local_mask > 0]
+                        if len(interior_vals) > 0:
+                            bright_sel = interior_vals >= np.percentile(interior_vals, 70)
+                            if region.ndim == 3:
+                                all_pixels = region[local_mask > 0]
+                                bg_color = np.median(
+                                    all_pixels[bright_sel], axis=0,
+                                ).astype(np.uint8)
                             else:
-                                ext_gray = ext_region
-                            # Local background brightness (blurred to
-                            # ignore isolated text strokes).
-                            local_bg = cv2.GaussianBlur(ext_gray, (15, 15), 0)
-                            text_overflow = (
-                                (exterior > 0)
-                                & (ext_gray < 150)
-                                & (local_bg > 200)
+                                bg_color = np.median(
+                                    interior_vals[bright_sel],
+                                ).astype(np.uint8)
+                        else:
+                            bg_color = (
+                                np.array([255, 255, 255], dtype=np.uint8)
+                                if region.ndim == 3
+                                else np.uint8(255)
                             )
-                            if np.count_nonzero(text_overflow) > 0:
-                                ext_region[text_overflow] = bg
 
-                        # Restore the original outline pixels so the
-                        # bubble contour line is perfectly preserved.
-                        outline_dst = cleaned[y : y + h, x : x + w]
-                        outline_dst[contour_line > 0] = original_outline[contour_line > 0]
+                        # Two-step bubble drawing:
+                        # 1) Fit an ellipse for the main body
+                        # 2) Detect and add the speech tail
+                        if region.ndim == 3:
+                            fill_c = tuple(int(c) for c in bg_color)
+                            outline_c = (0, 0, 0)
+                        else:
+                            fill_c = int(bg_color)
+                            outline_c = 0
+
+                        # Build the full-size bubble mask.
+                        orig_full_mask = np.zeros(
+                            cleaned.shape[:2], dtype=np.uint8,
+                        )
+                        if bubble.mask is not None:
+                            mh, mw = bubble.mask.shape[:2]
+                            orig_full_mask[:mh, :mw] = bubble.mask
+                        elif bubble.contour is not None:
+                            cv2.drawContours(
+                                orig_full_mask,
+                                [bubble.contour], -1,
+                                255, thickness=-1,
+                            )
+                        else:
+                            orig_full_mask[y : y + h, x : x + w] = local_mask
+
+                        # --- Step 1: Find the bubble body ---
+                        # Heavy erosion removes the narrow tail but
+                        # keeps the round body.
+                        erode_k = cv2.getStructuringElement(
+                            cv2.MORPH_ELLIPSE, (31, 31),
+                        )
+                        body_mask = cv2.erode(
+                            orig_full_mask, erode_k, iterations=1,
+                        )
+
+                        # Fit an ellipse to the eroded body (has
+                        # many more contour points than the original
+                        # sparse contour, giving a much better fit).
+                        body_contours, _ = cv2.findContours(
+                            body_mask, cv2.RETR_EXTERNAL,
+                            cv2.CHAIN_APPROX_NONE,
+                        )
+
+                        can_fit = (
+                            body_contours
+                            and len(max(body_contours, key=cv2.contourArea)) >= 5
+                        )
+
+                        if can_fit:
+                            body_contour = max(
+                                body_contours, key=cv2.contourArea,
+                            )
+                            ellipse = cv2.fitEllipse(body_contour)
+                            center, axes, angle = ellipse
+                            # Scale up to compensate for the erosion
+                            # and cover all text.
+                            sc = 1.05
+                            sc_axes = (
+                                axes[0] + 31 * 2 * sc,
+                                axes[1] + 31 * 2 * sc,
+                            )
+                            scaled_ellipse = (center, sc_axes, angle)
+
+                            # --- Step 2: Find the speech tail ---
+                            # Tail = original mask minus eroded body
+                            # (the narrow part that erosion removed).
+                            tail_region = cv2.subtract(
+                                orig_full_mask, body_mask,
+                            )
+
+                            # Keep only the largest connected component
+                            # (the actual tail, not edge fragments).
+                            n_labels, labels, stats, _ = (
+                                cv2.connectedComponentsWithStats(
+                                    tail_region, connectivity=8,
+                                )
+                            )
+
+                            bubble_canvas = np.zeros(
+                                cleaned.shape[:2], dtype=np.uint8,
+                            )
+                            cv2.ellipse(
+                                bubble_canvas, scaled_ellipse,
+                                255, thickness=-1,
+                            )
+
+                            if n_labels > 1:
+                                areas = stats[1:, cv2.CC_STAT_AREA]
+                                biggest = np.argmax(areas) + 1
+                                biggest_area = areas[biggest - 1]
+
+                                # Only add tail if it's large enough
+                                # to be a real speech tail (> 100 px).
+                                if biggest_area > 100:
+                                    tail_pts = np.argwhere(
+                                        labels == biggest,
+                                    )
+                                    cx, cy = center
+                                    # Find the tail tip (furthest
+                                    # point from the ellipse center).
+                                    dists = (
+                                        (tail_pts[:, 1] - cx) ** 2
+                                        + (tail_pts[:, 0] - cy) ** 2
+                                    )
+                                    tip_idx = np.argmax(dists)
+                                    tip_y, tip_x = tail_pts[tip_idx]
+
+                                    # Direction from center to tip
+                                    d = np.array(
+                                        [tip_x - cx, tip_y - cy],
+                                        dtype=np.float64,
+                                    )
+                                    d_len = np.linalg.norm(d)
+                                    if d_len > 0:
+                                        d_u = d / d_len
+                                        perp = np.array(
+                                            [-d_u[1], d_u[0]],
+                                        )
+                                        # Base at 50% from center to
+                                        # tip (well inside ellipse).
+                                        base_c = (
+                                            np.array([cx, cy])
+                                            + d_u * d_len * 0.5
+                                        )
+                                        # Base half-width proportional
+                                        # to tail length.
+                                        hw = max(d_len * 0.3, 15)
+                                        bl = base_c + perp * hw
+                                        br = base_c - perp * hw
+                                        tri = np.array(
+                                            [
+                                                bl.astype(np.int32),
+                                                [tip_x, tip_y],
+                                                br.astype(np.int32),
+                                            ],
+                                            dtype=np.int32,
+                                        )
+                                        cv2.fillPoly(
+                                            bubble_canvas, [tri], 255,
+                                        )
+
+                            # Draw the combined shape
+                            final_contours, _ = cv2.findContours(
+                                bubble_canvas,
+                                cv2.RETR_EXTERNAL,
+                                cv2.CHAIN_APPROX_NONE,
+                            )
+                            cv2.drawContours(
+                                cleaned, final_contours,
+                                -1, fill_c, thickness=-1,
+                            )
+                            cv2.drawContours(
+                                cleaned, final_contours,
+                                -1, outline_c, thickness=2,
+                            )
+                        else:
+                            # Fallback: fill entire mask
+                            cleaned[y : y + h, x : x + w][local_mask > 0] = bg_color
+                        result = InpaintResult(
+                            image=cleaned[y : y + h, x : x + w].copy(),
+                            method_used="flat_fill",
+                            quality_score=1.0,
+                        )
                         inpaint_results.append(result)
                     except Exception as e:
                         logger.warning("Inpainting failed for bubble %d: %s", bubble.id, e)
@@ -520,49 +633,54 @@ class MangaTranslationPipeline:
 
         layer_stack.add_layer("Cleaned", cleaned.copy())
 
-        # --- Step 5: Typesetting ---
-        tracker.start_step(4)
-        final = cleaned.copy()
+        # --- Step 5: Typesetting (skipped in cleanup-only mode) ---
         typeset_results: List[Optional[TypesetResult]] = []
-        with self._perf.track("typesetting") if self._perf else nullcontext():
-            try:
-                for bubble, translation in zip(valid_bubbles, translations):
-                    try:
-                        if not translation.translated_text:
+        if cleanup_only:
+            final = cleaned.copy()
+            tracker.skip_step(4)
+            logger.info("Cleanup-only mode: skipping typesetting")
+        else:
+            tracker.start_step(4)
+            final = cleaned.copy()
+            with self._perf.track("typesetting") if self._perf else nullcontext():
+                try:
+                    for bubble, translation in zip(valid_bubbles, translations):
+                        try:
+                            if not translation.translated_text:
+                                typeset_results.append(None)
+                                continue
+
+                            # Select font based on bubble type
+                            font_override = None
+                            if bubble.bubble_type:
+                                try:
+                                    bt = BubbleType(bubble.bubble_type)
+                                    font_profile = self.font_matcher.match_font(bt, translation.translated_text, tgt)
+                                    if font_profile.path:
+                                        font_override = font_profile.path
+                                except (ValueError, Exception):
+                                    pass
+
+                            result = self.typesetter.typeset_text(
+                                final,
+                                translation.translated_text,
+                                bubble.bbox,
+                                bubble_mask=bubble.mask,
+                                orientation=self.settings.typesetting.orientation,
+                                source_lang=src,
+                                target_lang=tgt,
+                                font_override=font_override,
+                            )
+                            final = result.image
+                            typeset_results.append(result)
+                        except Exception as e:
+                            logger.warning("Typesetting failed for bubble %d: %s", bubble.id, e)
+                            errors.append(f"Typesetting failed for bubble {bubble.id}: {e}")
                             typeset_results.append(None)
-                            continue
-
-                        # Select font based on bubble type
-                        font_override = None
-                        if bubble.bubble_type:
-                            try:
-                                bt = BubbleType(bubble.bubble_type)
-                                font_profile = self.font_matcher.match_font(bt, translation.translated_text, tgt)
-                                if font_profile.path:
-                                    font_override = font_profile.path
-                            except (ValueError, Exception):
-                                pass
-
-                        result = self.typesetter.typeset_text(
-                            final,
-                            translation.translated_text,
-                            bubble.bbox,
-                            bubble_mask=bubble.mask,
-                            orientation=self.settings.typesetting.orientation,
-                            source_lang=src,
-                            target_lang=tgt,
-                            font_override=font_override,
-                        )
-                        final = result.image
-                        typeset_results.append(result)
-                    except Exception as e:
-                        logger.warning("Typesetting failed for bubble %d: %s", bubble.id, e)
-                        errors.append(f"Typesetting failed for bubble {bubble.id}: {e}")
-                        typeset_results.append(None)
-            except Exception as e:
-                logger.error("Typesetting failed: %s", e, exc_info=True)
-                errors.append(f"Typesetting failed: {e}")
-        tracker.complete_step(4)
+                except Exception as e:
+                    logger.error("Typesetting failed: %s", e, exc_info=True)
+                    errors.append(f"Typesetting failed: {e}")
+            tracker.complete_step(4)
 
         # --- Quality Control (optional) ---
         qc_report = None
@@ -637,6 +755,7 @@ def translate_file(
     detect_sfx: bool = False,
     fonts_dir: Optional[str] = None,
     cross_page_context: Optional[CrossPageContext] = None,
+    cleanup_only: bool = False,
 ) -> PageTranslationResult:
     """Convenience function: translate a manga image file.
 
@@ -650,6 +769,7 @@ def translate_file(
         enable_qc: Enable quality control checks.
         enable_perf: Enable performance monitoring.
         exclude_regions: Semicolon-separated exclusion regions (x,y,w,h;...).
+        cleanup_only: If True, only run cleanup phase and save _no_text image.
 
     Returns:
         PageTranslationResult
@@ -704,20 +824,27 @@ def translate_file(
 
     result = pipeline.translate_page(
         image, progress_callback=console_progress, exclusion_mask=exclusion_mask,
-        cross_page_context=cross_page_context,
+        cross_page_context=cross_page_context, cleanup_only=cleanup_only,
     )
 
-    base, ext = os.path.splitext(input_path)
+    # Determine translated output path
+    if output_path is None:
+        base, ext = os.path.splitext(input_path)
+        output_path = f"{base}_translated{ext}"
+
+    # Derive cleaned path from output path so both land in the same directory
+    out_base, out_ext = os.path.splitext(output_path)
+    if out_base.endswith("_translated"):
+        out_base = out_base[: -len("_translated")]
+    no_text_path = f"{out_base}_no_text{out_ext}"
 
     # Save cleaned (no-text) intermediate image
-    no_text_path = f"{base}_no_text{ext}"
     save_image(result.cleaned_image, no_text_path)
     logger.info("Saved cleaned image to %s", no_text_path)
 
-    # Save final translated (lettered) image
-    if output_path is None:
-        output_path = f"{base}_translated{ext}"
-    save_image(result.final_image, output_path)
-    logger.info("Saved translated image to %s", output_path)
+    # Save final translated (lettered) image (skip in cleanup-only mode)
+    if not cleanup_only:
+        save_image(result.final_image, output_path)
+        logger.info("Saved translated image to %s", output_path)
 
     return result

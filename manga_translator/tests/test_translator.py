@@ -70,7 +70,8 @@ class TestTranslationResult:
 
 
 class TestOpenAIEngine:
-    def test_not_available_without_key(self):
+    def test_not_available_without_key(self, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         engine = OpenAIEngine(api_key="")
         assert engine.is_available() is False
 
