@@ -505,10 +505,61 @@ class MangaTranslationPipeline:
                             )
                             ellipse = cv2.fitEllipse(body_contour)
                             center, axes, angle = ellipse
-                            sc_axes = (axes[0] + 30, axes[1] + 30)
+
+                            # Detect the tail by finding the point
+                            # on the original contour that protrudes
+                            # farthest beyond the fitted ellipse.
+                            # This is more robust than connected-
+                            # component analysis which can pick edge
+                            # mismatch blobs over the real tail.
+                            _sa_t = axes[0] / 2.0
+                            _sb_t = axes[1] / 2.0
+                            _ang = np.radians(angle)
+                            _cos_a = np.cos(_ang)
+                            _sin_a = np.sin(_ang)
+                            _cx_t, _cy_t = center
+
+                            # Use the original contour points.
+                            _cont = bubble.contour.reshape(-1, 2)
+                            _dx = _cont[:, 0].astype(np.float64) - _cx_t
+                            _dy = _cont[:, 1].astype(np.float64) - _cy_t
+                            # Rotate into ellipse frame.
+                            _rx = _dx * _cos_a + _dy * _sin_a
+                            _ry = -_dx * _sin_a + _dy * _cos_a
+                            # Normalised distance: >1 means outside
+                            # the ellipse.
+                            _ndist = np.sqrt(
+                                (_rx / _sa_t) ** 2
+                                + (_ry / _sb_t) ** 2,
+                            )
+                            # The contour point farthest outside the
+                            # ellipse is the tail tip.
+                            _best_idx = int(np.argmax(_ndist))
+                            _tail_tip_x = int(_cont[_best_idx, 0])
+                            _tail_tip_y = int(_cont[_best_idx, 1])
+                            _max_ndist = _ndist[_best_idx]
+
+                            # Build a minimal tail_region so the
+                            # downstream code can check pixel count.
+                            tail_region = np.zeros(
+                                cleaned.shape[:2], dtype=np.uint8,
+                            )
+                            if _max_ndist > 1.02:
+                                # Mark a small circle at the tip so
+                                # len(tail_pts) > 15 passes.
+                                cv2.circle(
+                                    tail_region,
+                                    (_tail_tip_x, _tail_tip_y),
+                                    20, 255, thickness=-1,
+                                )
+
+                            # Scale the ellipse up for the final
+                            # bubble body.
+                            sc_axes = (axes[0] + 40, axes[1] + 40)
                             scaled_ellipse = (center, sc_axes, angle)
 
-                            # Draw the ellipse.
+                            # Build the clean bubble shape: scaled
+                            # ellipse + tail triangle.
                             bubble_canvas = np.zeros(
                                 cleaned.shape[:2], dtype=np.uint8,
                             )
@@ -517,38 +568,66 @@ class MangaTranslationPipeline:
                                 255, thickness=-1,
                             )
 
-                            # Find the tail: original mask minus ellipse.
-                            tail_region = cv2.subtract(
-                                orig_full_mask, bubble_canvas,
-                            )
-                            tail_pts = np.argwhere(tail_region > 0)
-                            if len(tail_pts) > 50:
+                            if _max_ndist > 1.02:
                                 cx, cy = center
-                                dists = (
-                                    (tail_pts[:, 1] - cx) ** 2
-                                    + (tail_pts[:, 0] - cy) ** 2
-                                )
-                                tip_idx = np.argmax(dists)
-                                tip_y, tip_x = tail_pts[tip_idx]
+                                sa, sb = sc_axes[0] / 2.0, sc_axes[1] / 2.0
                                 d = np.array(
-                                    [tip_x - cx, tip_y - cy],
+                                    [_tail_tip_x - cx,
+                                     _tail_tip_y - cy],
                                     dtype=np.float64,
                                 )
                                 d_len = np.linalg.norm(d)
                                 if d_len > 0:
                                     d_u = d / d_len
                                     perp = np.array([-d_u[1], d_u[0]])
+
+                                    # Scaled ellipse radius in the tail
+                                    # direction.
+                                    _rx_s = (
+                                        d_u[0] * _cos_a
+                                        + d_u[1] * _sin_a
+                                    )
+                                    _ry_s = (
+                                        -d_u[0] * _sin_a
+                                        + d_u[1] * _cos_a
+                                    )
+                                    _den_s = np.sqrt(
+                                        (_rx_s / sa) ** 2
+                                        + (_ry_s / sb) ** 2,
+                                    )
+                                    ellipse_r = (
+                                        1.0 / _den_s
+                                        if _den_s > 0 else sa
+                                    )
+
+                                    # Project the tip so it extends
+                                    # visibly beyond the scaled ellipse.
+                                    min_ext = ellipse_r * 0.25
+                                    overshoot = d_len - ellipse_r
+                                    if overshoot < min_ext:
+                                        ext_tip = (
+                                            np.array([cx, cy])
+                                            + d_u
+                                            * (ellipse_r + min_ext)
+                                        )
+                                        tip_x = ext_tip[0]
+                                        tip_y = ext_tip[1]
+                                    else:
+                                        tip_x = _tail_tip_x
+                                        tip_y = _tail_tip_y
+
+                                    # Base just inside the ellipse edge.
                                     base_c = (
                                         np.array([cx, cy])
-                                        + d_u * d_len * 0.35
+                                        + d_u * ellipse_r * 0.85
                                     )
-                                    hw = max(d_len * 0.25, 12)
+                                    hw = max(min(sa, sb) * 0.22, 14)
                                     bl = base_c + perp * hw
                                     br = base_c - perp * hw
                                     tri = np.array(
                                         [
                                             bl.astype(np.int32),
-                                            [tip_x, tip_y],
+                                            [int(tip_x), int(tip_y)],
                                             br.astype(np.int32),
                                         ],
                                         dtype=np.int32,
@@ -557,31 +636,41 @@ class MangaTranslationPipeline:
                                         bubble_canvas, [tri], 255,
                                     )
 
-                            # Fill: union with original mask so
-                            # nothing from the old bubble peeks through.
-                            fill_mask = cv2.bitwise_or(
-                                bubble_canvas, orig_full_mask,
+                            # Step 1: Erase the original bubble by
+                            # filling a dilated version of the original
+                            # mask with the background colour.
+                            _erase_k = cv2.getStructuringElement(
+                                cv2.MORPH_ELLIPSE, (9, 9),
                             )
-                            fill_contours, _ = cv2.findContours(
-                                fill_mask, cv2.RETR_EXTERNAL,
-                                cv2.CHAIN_APPROX_NONE,
+                            erase_mask = cv2.dilate(
+                                orig_full_mask, _erase_k, iterations=1,
                             )
-                            cv2.drawContours(
-                                cleaned, fill_contours,
-                                -1, fill_c, thickness=-1,
-                            )
-                            # Outline: from the clean ellipse+triangle.
-                            outline_contours, _ = cv2.findContours(
+                            cleaned[erase_mask > 0] = fill_c
+
+                            # Step 2: Draw the clean ellipse+tail
+                            # bubble shape on top.
+                            bubble_contours, _ = cv2.findContours(
                                 bubble_canvas, cv2.RETR_EXTERNAL,
                                 cv2.CHAIN_APPROX_NONE,
                             )
                             cv2.drawContours(
-                                cleaned, outline_contours,
+                                cleaned, bubble_contours,
+                                -1, fill_c, thickness=-1,
+                            )
+                            cv2.drawContours(
+                                cleaned, bubble_contours,
                                 -1, outline_c, thickness=2,
                             )
                         else:
-                            # Fallback: fill entire mask
-                            cleaned[y : y + h, x : x + w][local_mask > 0] = bg_color
+                            # Fallback: fill dilated mask to cover
+                            # the ink border.
+                            _fb_k = cv2.getStructuringElement(
+                                cv2.MORPH_ELLIPSE, (9, 9),
+                            )
+                            fb_mask = cv2.dilate(
+                                local_mask, _fb_k, iterations=1,
+                            )
+                            cleaned[y : y + h, x : x + w][fb_mask > 0] = bg_color
                         result = InpaintResult(
                             image=cleaned[y : y + h, x : x + w].copy(),
                             method_used="flat_fill",
