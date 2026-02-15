@@ -475,6 +475,35 @@ class MangaTranslationPipeline:
                                 bg = np.median(inner_pixels, axis=0).astype(np.uint8)
                                 inpainted[margin_zone > 0] = bg
 
+                        # Clean overflow text just outside the bubble.
+                        # Only fill dark pixels on locally light
+                        # backgrounds to avoid damaging nearby artwork.
+                        ext_dist = max(min(w, h) // 8, 12)
+                        ext_k = cv2.getStructuringElement(
+                            cv2.MORPH_ELLIPSE,
+                            (ext_dist * 2 + 1, ext_dist * 2 + 1),
+                        )
+                        exterior = cv2.subtract(
+                            cv2.dilate(local_mask, ext_k, iterations=1),
+                            local_mask,
+                        )
+                        if np.count_nonzero(exterior) > 0:
+                            ext_region = cleaned[y : y + h, x : x + w]
+                            if ext_region.ndim == 3:
+                                ext_gray = cv2.cvtColor(ext_region, cv2.COLOR_BGR2GRAY)
+                            else:
+                                ext_gray = ext_region
+                            # Local background brightness (blurred to
+                            # ignore isolated text strokes).
+                            local_bg = cv2.GaussianBlur(ext_gray, (15, 15), 0)
+                            text_overflow = (
+                                (exterior > 0)
+                                & (ext_gray < 150)
+                                & (local_bg > 200)
+                            )
+                            if np.count_nonzero(text_overflow) > 0:
+                                ext_region[text_overflow] = bg
+
                         # Restore the original outline pixels so the
                         # bubble contour line is perfectly preserved.
                         outline_dst = cleaned[y : y + h, x : x + w]
