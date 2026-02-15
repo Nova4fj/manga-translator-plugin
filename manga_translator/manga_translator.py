@@ -557,18 +557,26 @@ class MangaTranslationPipeline:
                                         bubble_canvas, [tri], 255,
                                     )
 
-                            # Draw the merged contour
-                            final_contours, _ = cv2.findContours(
-                                bubble_canvas,
-                                cv2.RETR_EXTERNAL,
+                            # Fill: union with original mask so
+                            # nothing from the old bubble peeks through.
+                            fill_mask = cv2.bitwise_or(
+                                bubble_canvas, orig_full_mask,
+                            )
+                            fill_contours, _ = cv2.findContours(
+                                fill_mask, cv2.RETR_EXTERNAL,
                                 cv2.CHAIN_APPROX_NONE,
                             )
                             cv2.drawContours(
-                                cleaned, final_contours,
+                                cleaned, fill_contours,
                                 -1, fill_c, thickness=-1,
                             )
+                            # Outline: from the clean ellipse+triangle.
+                            outline_contours, _ = cv2.findContours(
+                                bubble_canvas, cv2.RETR_EXTERNAL,
+                                cv2.CHAIN_APPROX_NONE,
+                            )
                             cv2.drawContours(
-                                cleaned, final_contours,
+                                cleaned, outline_contours,
                                 -1, outline_c, thickness=2,
                             )
                         else:
